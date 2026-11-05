@@ -566,6 +566,7 @@ function hitFx() {
   requestAnimationFrame(() => { f.style.transition = 'opacity .45s'; f.style.opacity = 0; });
 }
 function hit(p) {
+  if (net.role === 'guest') return;          // los golpes y las vidas los decide el anfitrión
   if (p.invul > 0 || state !== 'play' || overTimer >= 0) return;
   lives--; p.invul = 2.2; p.tumble = 0.9; hitFx(); updateHUD();
   if (lives <= 0) overTimer = 1.4;
@@ -668,7 +669,9 @@ function syncGhost() { Object.assign(P[1], { x: P[0].x, z: P[0].z, vx: P[0].vx, 
 // ---------- Online ----------
 // El anfitrión (rojo) simula todo y comparte el estado; el invitado (azul) solo manda sus controles.
 const net = { role: null, code: null, room: null, filter: false, gameId: 0, go: 0, lastGo: 0, lastSend: 0,
-              lastIn: '', snap: null, snapAt: 0, snapUpd: -1, seenGame: -1, lastDist: 0, wasLinked: false };
+              lastIn: '', snap: null, snapAt: 0, snapUpd: -1, seenGame: -1, lastDist: 0, wasLinked: false,
+              rtt: 0, auth: null, lastPg: 0, pgAt: 0, hitLatch: false };
+const SHIM_LAG = +(new URLSearchParams(location.search).get('lag') || 0);   // solo pruebas: retraso artificial en ms
 let roomApi = null;
 
 function makeShim() {
@@ -676,7 +679,10 @@ function makeShim() {
   const bc = new BroadcastChannel('atados-shim'), me = Math.random().toString(36).slice(2, 10), rooms = {};
   function mk(name) {
     const R = { mine: {}, others: new Map() };
-    const send = () => bc.postMessage({ name, id: me, pres: R.mine });
+    const send = () => {
+      const m = { name, id: me, pres: JSON.parse(JSON.stringify(R.mine)) };
+      if (SHIM_LAG) setTimeout(() => bc.postMessage(m), SHIM_LAG * (1 + Math.random() * 0.3)); else bc.postMessage(m);
+    };
     const beat = setInterval(() => { if (rooms[name] === R) send(); else clearInterval(beat); }, 500);
     R.api = {
       name,
@@ -705,14 +711,16 @@ function makePeerNet() {
     join(name, role) {
       return new Promise((resolve, reject) => {
         const id = name.replace(/[^a-z0-9-]/g, '');
-        const st = { mine: {}, other: null, otherUpd: 0, conn: null };
+        const st = { mine: {}, other: null, otherUpd: 0, conn: null, seq: 0, lastN: 0 };
         let done = false, retry = null;
         const peer = role === 'host' ? new Peer(id) : new Peer();
+        // Canal no fiable: un paquete perdido no frena a los siguientes. Cada mensaje lleva el estado completo y un número de orden.
+        const OPTS = { reliable: false, serialization: 'json' };
         const api = {
-          name, lastError: null,
+          name, lastError: null, fast: true,
           presence(patch) {
             for (const k in patch) { if (patch[k] === null) delete st.mine[k]; else st.mine[k] = patch[k]; }
-            if (st.conn && st.conn.open) { try { st.conn.send({ pres: st.mine }); } catch (e) {} }
+            if (st.conn && st.conn.open) { try { st.conn.send({ pres: st.mine, n: ++st.seq }); } catch (e) {} }
             return Promise.resolve();
           },
           peers() {
@@ -724,16 +732,20 @@ function makePeerNet() {
           connected: () => !!(st.conn && st.conn.open),
         };
         const wire = c => {
-          st.conn = c;
-          c.on('open', () => { api.lastError = null; c.send({ pres: st.mine }); });
-          c.on('data', d => { if (d && d.pres) { st.other = d.pres; st.otherUpd = performance.now(); } });
+          st.conn = c; st.lastN = 0;
+          c.on('open', () => { api.lastError = null; c.send({ pres: st.mine, n: ++st.seq }); });
+          c.on('data', d => {
+            if (!d || !d.pres) return;
+            if (typeof d.n === 'number') { if (d.n <= st.lastN) return; st.lastN = d.n; }   // descarta mensajes viejos que llegan tarde
+            st.other = d.pres; st.otherUpd = performance.now();
+          });
           c.on('close', () => { if (st.conn === c) { st.conn = null; st.other = null; } });
           c.on('error', () => {});
         };
         peer.on('open', () => {
           if (role === 'guest') {
-            wire(peer.connect(id, { reliable: true }));
-            retry = setInterval(() => { if (!(st.conn && st.conn.open) && !peer.destroyed) wire(peer.connect(id, { reliable: true })); }, 3000);
+            wire(peer.connect(id, OPTS));
+            retry = setInterval(() => { if (!(st.conn && st.conn.open) && !peer.destroyed) wire(peer.connect(id, OPTS)); }, 3000);
           }
           done = true; resolve(api);
         });
@@ -754,7 +766,7 @@ function makePeerNet() {
   for (let i = 0; i < 30 && !(window.claude && typeof window.claude.use === 'function'); i++) await new Promise(r => setTimeout(r, 100));
   if (window.claude && typeof window.claude.use === 'function') {
     try { api = await window.claude.use('room'); } catch (e) { api = null; }
-  } else if (typeof Peer === 'function') {
+  } else if (typeof Peer === 'function' && !/[?&]shim/.test(location.search)) {
     api = makePeerNet();
   } else if (typeof BroadcastChannel !== 'undefined' && (location.protocol === 'file:' || /^(localhost|127\.0\.0\.1)$/.test(location.hostname))) {
     api = makeShim(); $('netNote').dataset.shim = '1';
@@ -794,10 +806,11 @@ function guestInput() {
 function sendGuestInput(force) {
   const i = myInput(), arr = [Math.round(i.steer * 10) / 10, i.push ? 1 : 0, i.brake ? 1 : 0];
   const s = JSON.stringify(arr) + net.go;
-  const now = performance.now();
-  if (!force && (s === net.lastIn || now - net.lastSend < 33)) return;
+  const now = performance.now(), minGap = net.room.fast ? 15 : 33;
+  // Se envía al cambiar las teclas y, si no, cada 50 ms (sirve también para medir el ping).
+  if (!force && (now - net.lastSend < minGap || (s === net.lastIn && now - net.lastSend < 50))) return;
   net.lastIn = s; net.lastSend = now;
-  net.room.presence({ in: arr, go: net.go }).catch(() => {});
+  net.room.presence({ in: arr, go: net.go, pg: Math.round(now) }).catch(() => {});
 }
 function buildState() {
   const mz = (P[0].z + P[1].z) / 2, m = [];
@@ -810,6 +823,7 @@ function buildState() {
   const r = []; for (const q of rope) r.push(r2(q.x), r2(q.z));
   return {
     g: net.gameId, sd: seed, s: state, l: lives, d: net.lastDist,
+    pe: net.lastPg, ph: Math.round(performance.now() - net.pgAt),   // eco del ping del invitado
     p: P.map(p => [r2(p.x), r2(p.z), r2(p.vx), r2(p.vz), r2(p.heading), r2(p.steer), r2(p.tumble), r2(p.invul), r2(p.spin), r2(p.vl), p.brake ? 1 : 0]),
     r, m,
   };
@@ -819,7 +833,9 @@ function hostNet() {
   const go = g ? +g.presence.go || 0 : 0;
   if (g && go !== net.lastGo) { net.lastGo = go; if (state !== 'play') startGame(); }
   const now = performance.now();
-  if (now - net.lastSend > 33) { net.lastSend = now; net.room.presence({ st: buildState() }).catch(() => {}); }
+  const pg = g ? +g.presence.pg || 0 : 0;
+  if (pg && pg !== net.lastPg) { net.lastPg = pg; net.pgAt = now; }
+  if (now - net.lastSend > (net.room.fast ? 20 : 33)) { net.lastSend = now; net.room.presence({ st: buildState() }).catch(() => {}); }
   return g;
 }
 function guestNet(dt) {
@@ -827,9 +843,14 @@ function guestNet(dt) {
   const h = findPeer('host');
   const st = h && h.presence.st;
   if (!st || !Array.isArray(st.p)) return h;
-  if (h.updatedAt !== net.snapUpd) { net.snapUpd = h.updatedAt; net.snap = st; net.snapAt = performance.now(); }
+  const now = performance.now();
+  let fresh = false;
+  if (st !== net.snap) {
+    fresh = true; net.snap = st; net.snapAt = now;
+    if (st.pe) { const s = now - st.pe - (+st.ph || 0); if (s > 0 && s < 2000) net.rtt = net.rtt ? lerp(net.rtt, s, 0.15) : s; }
+  }
   if (st.g !== net.seenGame) {
-    net.seenGame = st.g; resetWorld(+st.sd || 1);
+    net.seenGame = st.g; resetWorld(+st.sd || 1); net.auth = null; net.hitLatch = false;
   }
   if (st.s !== state) {
     if (st.s === 'play') { $('menu').classList.add('hidden'); $('over').classList.add('hidden'); state = 'play'; }
@@ -837,21 +858,31 @@ function guestNet(dt) {
     else { state = st.s; $('over').classList.add('hidden'); $('menu').classList.remove('hidden'); }
   }
   if (typeof st.l === 'number' && st.l !== lives) { if (st.l < lives) hitFx(); lives = st.l; updateHUD(); }
-  const age = Math.min(0.15, (performance.now() - net.snapAt) / 1000);
-  const k = 1 - Math.exp(-15 * dt);
-  st.p.forEach((a, i) => {
-    const p = P[i]; if (!Array.isArray(a)) return;
-    const tx = a[0] + a[2] * age, tz = a[1] + a[3] * age, ox = p.x, oz = p.z;
+  // El estado del anfitrión llega con medio ping de retraso: lo adelantamos ese tiempo.
+  const lead = Math.min(0.3, net.rtt / 2000);
+  const age = Math.min(0.25, (now - net.snapAt) / 1000) + lead;
+  const k = 1 - Math.exp(-10 * dt);
+  const a = st.p[0], b = st.p[1];
+  if (Array.isArray(a)) {             // compañero (rojo): se interpola hacia donde estará ahora
+    const p = P[0], tx = a[0] + a[2] * age, tz = a[1] + a[3] * age, ox = p.x, oz = p.z;
     if (Math.hypot(tx - p.x, tz - p.z) > 8) { p.x = tx; p.z = tz; } else { p.x = lerp(p.x, tx, k); p.z = lerp(p.z, tz, k); }
     p.vx = a[2]; p.vz = a[3]; p.heading = lerp(p.heading, a[4], k); p.steer = a[5]; p.tumble = a[6]; p.invul = a[7];
     p.spin = a[8]; p.vl = a[9]; p.brake = !!a[10];
     p.trailAcc += Math.hypot(p.x - ox, p.z - oz);
     if (p.trailAcc > 0.35) { p.trailAcc = 0; if (p.tumble <= 0 && state === 'play') addTrail(p); }
-  });
-  if (Array.isArray(st.r) && st.r.length === N * 2) {
-    const avx = (P[0].vx + P[1].vx) / 2 * age, avz = (P[0].vz + P[1].vz) / 2 * age;
-    rope.forEach((q, i) => { q.x = lerp(q.x, st.r[i * 2] + avx, k); q.z = lerp(q.z, st.r[i * 2 + 1] + avz, k); });
-    rope[0].x = P[0].x; rope[0].z = P[0].z; rope[N - 1].x = P[1].x; rope[N - 1].z = P[1].z;
+  }
+  if (Array.isArray(b) && fresh) {    // yo (azul): lo simulo en local; esto es solo la referencia para corregir
+    net.auth = { x: b[0] + b[2] * lead, z: b[1] + b[3] * lead, vx: b[2], vz: b[3] };
+    const me = P[1];
+    if (b[6] > 0.2 && !net.hitLatch) {      // el anfitrión manda: si dice que me he caído, me caigo
+      net.hitLatch = true;
+      Object.assign(me, { x: net.auth.x, z: net.auth.z, vx: b[2], vz: b[3], tumble: b[6], invul: b[7], spin: b[8] });
+    }
+    if (b[6] <= 0) net.hitLatch = false;
+    if (b[7] > me.invul) me.invul = b[7];
+  }
+  if (state !== 'play' && Array.isArray(st.r) && st.r.length === N * 2) {
+    rope.forEach((q, i) => { q.x = st.r[i * 2]; q.z = st.r[i * 2 + 1]; });
   }
   if (Array.isArray(st.m)) for (const e of st.m) {
     const o = obsById.get(e[0]); if (!o) continue;
@@ -863,12 +894,33 @@ function guestNet(dt) {
   }
   return h;
 }
+// Paso de física del invitado: su esquiador responde al instante y se corrige poco a poco hacia el del anfitrión.
+function guestStep(dt) {
+  const me = P[1], a = P[0];
+  const mz = (a.z + me.z) / 2, mx = (a.x + me.x) / 2;
+  world.D = clamp(mz / 3000, 0, 1); world.G = 5.5 + world.D * 3; world.drag = 0.024 - 0.008 * world.D;
+  a.x += a.vx * dt; a.z += a.vz * dt;
+  stepPlayer(me, myInput(), dt);
+  collidePlayers();
+  const near = obstacles.filter(o => o.ropeBlock && Math.abs(o.z - mz) < ROPE_LEN + 4 && Math.abs(o.x - mx) < ROPE_LEN + 4);
+  stepRope(dt, near);
+  collidePlayer(me);
+  me.trailAcc += Math.hypot(me.vx, me.vz) * dt;
+  if (me.trailAcc > 0.35) { me.trailAcc = 0; if (me.tumble <= 0) addTrail(me); }
+  const t = net.auth;
+  if (t) {
+    t.x += t.vx * dt; t.z += t.vz * dt;
+    const ex = t.x - me.x, ez = t.z - me.z;
+    if (Math.hypot(ex, ez) > 5) { me.x = t.x; me.z = t.z; me.vx = t.vx; me.vz = t.vz; }
+    else { const c = 0.02; me.x += ex * c; me.z += ez * c; me.vx += (t.vx - me.vx) * c; me.vz += (t.vz - me.vz) * c; }
+  }
+}
 function netTick(dt) {
   const tag = $('netTag');
   if (!net.role) { tag.textContent = mode === 'solo' && state !== 'menu' ? 'Modo solo' : ''; tag.classList.remove('bad'); return; }
   const other = net.role === 'host' ? hostNet() : guestNet(dt);
   const linked = !!other;
-  tag.textContent = `Online · ${net.code} · ` + (linked ? (net.role === 'host' ? 'jugador 2 conectado' : 'conectado') : 'esperando al otro jugador…');
+  tag.textContent = `Online · ${net.code} · ` + (linked ? (net.role === 'host' ? 'jugador 2 conectado' : `conectado · ping ${Math.round(net.rtt)} ms`) : 'esperando al otro jugador…');
   tag.classList.toggle('bad', !linked);
   if (linked !== net.wasLinked) { net.wasLinked = linked; renderLobby(); }
   if (!linked && net.role === 'guest' && net.room && net.room.lastError === 'peer-unavailable')
@@ -995,9 +1047,11 @@ function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   pollPadStart();
-  if (net.role !== 'guest' && state === 'play') { acc += dt; while (acc >= SUB) { step(SUB); acc -= SUB; } }
-  else acc = 0;
   netTick(dt);
+  if (state === 'play') {
+    acc += dt;
+    while (acc >= SUB) { if (net.role === 'guest') guestStep(SUB); else step(SUB); acc -= SUB; }
+  } else acc = 0;
   updateVisuals(dt, now / 1000);
   renderer.render(scene, camera);
 }
