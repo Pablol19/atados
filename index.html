@@ -64,6 +64,7 @@
     <div id="modeBox">
       <div class="row">
         <button id="bLocal" class="primary">Jugar en local</button>
+        <button id="bSolo">Jugar solo</button>
         <button id="bHost">Crear partida online</button>
       </div>
       <div class="row">
@@ -520,7 +521,10 @@ function pollPadStart() {
 // ---------- Estado del juego ----------
 const world = { G: 5.5, drag: 0.024, D: 0 };
 let state = 'menu', lives = 3, overTimer = -1, shake = 0;
-let best = 0; try { best = +localStorage.getItem('atados_best') || 0; } catch (e) {}
+let mode = 'local';            // 'local' | 'solo' (con bot); el online usa net.role
+let best = 0;
+const bestKey = () => mode === 'solo' && !net.role ? 'atados_best_solo' : 'atados_best';
+function loadBest() { best = 0; try { best = +localStorage.getItem(bestKey()) || 0; } catch (e) {} }
 const $ = id => document.getElementById(id);
 
 function resetWorld(newSeed) {
@@ -566,7 +570,7 @@ function hit(p) {
 }
 function showOver(d) {
   state = 'over';
-  const rec = d > best; if (rec) { best = d; try { localStorage.setItem('atados_best', String(best)); } catch (e) {} }
+  const rec = d > best; if (rec) { best = d; try { localStorage.setItem(bestKey(), String(best)); } catch (e) {} }
   $('finalDist').textContent = `${d} m`;
   $('finalBest').textContent = rec ? '¡Nuevo récord!' : `Récord: ${Math.floor(best)} m`;
   $('overMsg').textContent = net.role === 'guest' ? 'ESPACIO para pedir otra partida' : 'ESPACIO para volver a intentarlo';
@@ -638,6 +642,7 @@ function step(dt) {
   let inputs;
   if (overTimer >= 0) inputs = [{ steer: 0, brake: true }, { steer: 0, brake: true }];
   else if (net.role === 'host') inputs = [myInput(), guestInput()];
+  else if (mode === 'solo') inputs = [window.__autoP1 ? botInput(dt, 0) : myInput(), botInput(dt, 1)];
   else inputs = [getInput(0), getInput(1)];
   P.forEach((p, i) => stepPlayer(p, inputs[i], dt));
   collidePlayers();
@@ -649,6 +654,45 @@ function step(dt) {
     if (p.trailAcc > 0.35) { p.trailAcc = 0; if (p.tumble <= 0) addTrail(p); }
   });
   if (overTimer >= 0) { overTimer -= dt; if (overTimer < 0) gameOver(); }
+}
+
+// ---------- Bot (modo solo) ----------
+// El azul intenta ir a tu lado y esquivar lo que tiene delante. Decide cada ~0.15 s y comete pequeños errores.
+const bots = [{ t: 0, side: 1, tx: 4, brake: false }, { t: 0, side: -1, tx: -4, brake: false }];
+function botInput(dt, i = 1) {
+  const b = P[i], a = P[1 - i], bot = bots[i];
+  bot.t -= dt;
+  if (bot.t <= 0) {
+    bot.t = 0.1;
+    if (Math.abs(b.x - a.x) > 2.5) bot.side = Math.sign(b.x - a.x);
+    const pref = clamp(a.x + bot.side * 5, -TRACK + 2, TRACK - 2);
+    const spd = Math.max(4, b.vz), D = Math.max(10, spd * 1.3);
+    const ahead = obstacles.filter(o => o.solid && o.z - b.z > -1 && o.z - b.z < D + 4);
+    // Prueba varias trayectorias laterales y se queda con la más despejada.
+    let bestX = pref, bestScore = Infinity, bestHit = 0;
+    for (let k = -8; k <= 8; k++) {
+      const cx = clamp(b.x + k * 1.5, -TRACK + 1.5, TRACK - 1.5);
+      let score = 0.06 * Math.abs(cx - pref) + 0.2 * Math.abs(cx - bot.tx), hitAt = 0;
+      for (const o of ahead) {
+        const dz = o.z - b.z, close = Math.max(1, spd - o.vz), tt = Math.max(0, dz) / close;
+        const ox = o.x + o.vx * tt, px = b.x + (cx - b.x) * clamp(dz / D, 0, 1);
+        const gap = Math.abs(px - ox) - o.r - 0.7;
+        const w = 1 + (D - Math.max(0, dz)) / D;
+        if (gap < 0) { score += 10 * w * (1 - gap); hitAt = Math.max(hitAt, w); }
+        else if (gap < 1.2) score += (1.2 - gap) * 0.8;
+        // Que el obstáculo no quede entre los dos: la cuerda se engancharía.
+        const ax = clamp(a.x + a.vx * tt, -TRACK, TRACK);
+        if ((ox - px) * (ox - ax) < 0 && Math.abs(o.z - a.z) < D) score += 7 * w;
+      }
+      if (score < bestScore) { bestScore = score; bestX = cx; bestHit = hitAt; }
+    }
+    bot.tx = bestX + (Math.random() - 0.5) * 0.4;
+    const v = Math.hypot(b.vx, b.vz);
+    bot.brake = (bestHit > 1.6 && v > 9) || (bestScore > 3 && v > 16);
+  }
+  const desired = clamp(Math.atan2(bot.tx - b.x, 6), -1, 1);
+  const sp = Math.hypot(b.vx, b.vz);
+  return { steer: clamp((desired - b.heading) * 2.5, -1, 1), push: sp < 6, brake: bot.brake };
 }
 
 // ---------- Online ----------
@@ -851,7 +895,7 @@ function guestNet(dt) {
 }
 function netTick(dt) {
   const tag = $('netTag');
-  if (!net.role) { tag.textContent = ''; return; }
+  if (!net.role) { tag.textContent = mode === 'solo' && state !== 'menu' ? 'Solo · el azul es un bot' : ''; tag.classList.remove('bad'); return; }
   const other = net.role === 'host' ? hostNet() : guestNet(dt);
   const linked = !!other;
   tag.textContent = `Online · ${net.code} · ` + (linked ? (net.role === 'host' ? 'jugador 2 conectado' : 'conectado') : 'esperando al otro jugador…');
@@ -885,6 +929,7 @@ async function enterRoom(role, code, tries = 0) {
   }
   entering = false;
   Object.assign(net, { role, code, room: r, filter, wasLinked: false, seenGame: -1, lastGo: 0, go: 0, lastIn: '' });
+  setMode('local');
   r.presence({ role, code, st: null, in: null, go: 0 }).catch(() => {});
   $('codeOut').textContent = code;
   $('modeBox').classList.add('hidden'); $('lobby').classList.remove('hidden');
@@ -913,7 +958,9 @@ function toMenu() {
   $('over').classList.add('hidden'); $('menu').classList.remove('hidden');
 }
 document.addEventListener('click', e => { if (e.target.tagName === 'BUTTON') e.target.blur(); });
-$('bLocal').onclick =() => { if (net.role) return; startGame(); };
+function setMode(m) { mode = m; loadBest(); updateHUD(); }
+$('bLocal').onclick = () => { if (net.role) return; setMode('local'); startGame(); };
+$('bSolo').onclick = () => { if (net.role) return; setMode('solo'); startGame(); };
 $('bHost').onclick = hostGame;
 $('bJoin').onclick = joinGame;
 $('bStart').onclick = () => onStart();
@@ -969,7 +1016,7 @@ function updateVisuals(dt, t) {
 }
 
 // ---------- Bucle ----------
-resetWorld(12345); camera.position.set(0, 26, -13);
+loadBest(); resetWorld(12345); camera.position.set(0, 26, -13);
 let last = performance.now(), acc = 0;
 function frame(now) {
   requestAnimationFrame(frame);
@@ -982,7 +1029,7 @@ function frame(now) {
   renderer.render(scene, camera);
 }
 requestAnimationFrame(frame);
-window.__game = { P, net, get state() { return state; }, obstacles: () => obstacles, rope };
+window.__game = { P, net, bots,sim(n) { for (let i = 0; i < n && state === 'play'; i++) { step(SUB); if (i % 60 === 0) ensureChunks(); } },get state() { return state; }, obstacles: () => obstacles, rope };
 </script>
 
 </html>
