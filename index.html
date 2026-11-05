@@ -1,0 +1,988 @@
+<!doctype html>
+<html lang="es">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8">
+<title>Atados</title>
+<style>
+  :root{color-scheme:light}
+  html,body{margin:0;height:100%;overflow:hidden;background:#dfe9f5;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;user-select:none}
+  canvas{display:block}
+  #hud{position:fixed;inset:0;pointer-events:none;color:#1d2b3a}
+  .top{display:flex;justify-content:space-between;align-items:flex-start;padding:14px 20px}
+  #dist{font-size:36px;font-weight:900;text-shadow:0 2px 0 #fff}
+  #speed{font-size:15px;font-weight:700;opacity:.7}
+  #hearts{font-size:34px;color:#e63946;letter-spacing:6px;text-shadow:0 2px 0 #fff;text-align:center}
+  #netTag{font-size:13px;font-weight:800;color:#2a5c99;letter-spacing:0;margin-top:2px}
+  #netTag.bad{color:#c1121f}
+  #best{font-size:16px;font-weight:800;text-align:right;opacity:.75}
+  .overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(214,227,243,.55);backdrop-filter:blur(3px)}
+  .hidden{display:none!important}
+  .card{background:#fff;border-radius:20px;padding:28px 34px;max-width:580px;margin:16px;box-shadow:0 20px 60px rgba(30,50,80,.25);text-align:center;color:#1d2b3a}
+  .card h1{margin:0;font-size:58px;letter-spacing:4px;font-weight:900}
+  .card h1 span{color:#ff7a1a}
+  .sub{margin:4px 0 20px;opacity:.65;font-weight:600}
+  .ctrls{display:flex;gap:14px;justify-content:center;margin-bottom:18px;flex-wrap:wrap}
+  .pl{flex:1;min-width:200px;border-radius:14px;padding:12px 14px;text-align:left;font-size:14px;line-height:1.6}
+  .p1{background:#fde8ea;border:2px solid #e63946}
+  .p2{background:#e3eefc;border:2px solid #2a7de1}
+  .pl b{display:block;font-size:16px;margin-bottom:2px}
+  kbd{display:inline-block;min-width:18px;padding:1px 6px;border-radius:6px;background:#fff;border:1px solid #bbb;border-bottom-width:3px;font:700 12px/1.4 monospace;text-align:center}
+  .go{font-size:19px;font-weight:800;animation:pulse 1.2s infinite;margin-top:14px}
+  .tip{font-size:13px;opacity:.65;margin-top:10px}
+  .big{font-size:48px;font-weight:900;margin:6px 0}
+  .row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:10px}
+  button{font:800 15px system-ui,sans-serif;padding:10px 16px;border-radius:12px;border:2px solid #1d2b3a;background:#fff;color:#1d2b3a;cursor:pointer}
+  button.primary{background:#ff7a1a;border-color:#ff7a1a;color:#fff}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button:focus-visible,input:focus-visible{outline:3px solid #2a7de1;outline-offset:2px}
+  input#codeIn{font:900 18px monospace;letter-spacing:6px;width:120px;text-align:center;text-transform:uppercase;padding:9px;border-radius:12px;border:2px solid #1d2b3a}
+  .code{font:900 40px monospace;letter-spacing:10px;color:#ff7a1a;margin:4px 0}
+  .lobbyMsg{font-weight:700}
+  .ok{color:#2a9d4a}
+  @keyframes pulse{50%{opacity:.45}}
+  @media (prefers-reduced-motion: reduce){.go{animation:none}}
+  #flash{position:fixed;inset:0;background:#ff3b3b;opacity:0;pointer-events:none;transition:opacity .35s}
+</style>
+<div id="hud">
+  <div class="top">
+    <div><div id="dist">0 m</div><div id="speed">0 km/h</div></div>
+    <div><div id="hearts">♥♥♥</div><div id="netTag"></div></div>
+    <div id="best">Récord: 0 m</div>
+  </div>
+</div>
+<div id="flash"></div>
+
+<div id="menu" class="overlay">
+  <div class="card">
+    <h1>ATA<span>DOS</span></h1>
+    <div class="sub">Dos esquiadores. Una cuerda. Cero coordinación.</div>
+    <div class="ctrls">
+      <div class="pl p1"><b>Jugador 1 (rojo)</b><kbd>A</kbd> <kbd>D</kbd> girar<br><kbd>W</kbd> impulsarse<br><kbd>S</kbd> frenar</div>
+      <div class="pl p2"><b>Jugador 2 (azul)</b><kbd>←</kbd> <kbd>→</kbd> girar<br><kbd>↑</kbd> impulsarse<br><kbd>↓</kbd> frenar</div>
+    </div>
+
+    <div id="modeBox">
+      <div class="row">
+        <button id="bLocal" class="primary">Jugar en local</button>
+        <button id="bHost">Crear partida online</button>
+      </div>
+      <div class="row">
+        <input id="codeIn" maxlength="4" placeholder="CÓDIGO" autocomplete="off" aria-label="Código de la partida">
+        <button id="bJoin">Unirse</button>
+      </div>
+      <div id="netNote" class="tip">Preparando el modo online…</div>
+    </div>
+
+    <div id="lobby" class="hidden">
+      <div class="tip" style="margin-top:0">Código de la partida</div>
+      <div class="code" id="codeOut">----</div>
+      <div class="lobbyMsg" id="lobbyMsg"></div>
+      <div class="tip">En online cada uno juega desde su ordenador con <kbd>WASD</kbd> o las flechas.</div>
+      <div class="row">
+        <button id="bStart" class="primary">Empezar</button>
+        <button id="bLeave">Salir de la sala</button>
+      </div>
+    </div>
+    <div class="tip">3 vidas compartidas · también funciona con mandos (stick, A impulso, B freno)</div>
+  </div>
+</div>
+
+<div id="over" class="overlay hidden">
+  <div class="card">
+    <div class="sub" style="margin:0">Habéis aguantado</div>
+    <div class="big" id="finalDist">0 m</div>
+    <div class="sub" id="finalBest"></div>
+    <div class="go" id="overMsg">ESPACIO para volver a intentarlo</div>
+    <div class="row"><button id="bMenu">Volver al menú</button></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+// ---------- Constantes ----------
+const ROPE_LEN = 11, N = 16, SEG = ROPE_LEN / (N - 1);
+const TRACK = 30, SUB = 1 / 120, CH = 20;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+let rng = Math.random;                          // se cambia por uno con semilla al generar la montaña
+const rand = (a = 0, b = 1) => a + rng() * (b - a);
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const r2 = v => Math.round(v * 100) / 100;
+
+// ---------- Render ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xdfe9f5);
+scene.fog = new THREE.Fog(0xdfe9f5, 50, 140);
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.5, 400);
+addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+});
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0xaabbd6, 1.4));
+const sun = new THREE.DirectionalLight(0xfff6e8, 2.2);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -50, right: 50, top: 50, bottom: -50, near: 1, far: 150 });
+sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.03;
+scene.add(sun, sun.target);
+
+// ---------- Materiales y geometrías ----------
+const mat = (c, o = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, flatShading: true, ...o });
+const MAT = {
+  trunk: mat(0x6b4a2f), pine: mat(0x2f6b4f), pine2: mat(0x3d8a5f), snow: mat(0xffffff),
+  rock: mat(0x8a93a0), wood: mat(0x8b5a3c), roof: mat(0xb23a3a), window: mat(0xffd27a, { emissive: 0x664400 }),
+  moose: mat(0x7a5232), antler: mat(0xd9c7a0), dark: mat(0x2a2a2a), carrot: mat(0xff8a1a),
+  plow: mat(0xf2b705), glass: mat(0x9fd3ff), light: mat(0xff7a00, { emissive: 0xff5500 }),
+  ice: new THREE.MeshStandardMaterial({ color: 0xbfe3ff, roughness: 0.1, metalness: 0.1, transparent: true, opacity: 0.85 }),
+  ski: mat(0x222831), pants: mat(0x2d3142), skin: mat(0xf1c8a5), pole: mat(0xdddddd),
+  rope: mat(0xff7a1a, { roughness: 0.6 }), red: mat(0xe63946), white: mat(0xffffff),
+};
+const GEO = {
+  trunk: new THREE.CylinderGeometry(0.18, 0.22, 0.8, 6),
+  c1: new THREE.ConeGeometry(1.1, 1.6, 7), c2: new THREE.ConeGeometry(0.85, 1.4, 7),
+  c3: new THREE.ConeGeometry(0.55, 1.1, 7), cap: new THREE.ConeGeometry(0.3, 0.5, 7),
+  rock: new THREE.DodecahedronGeometry(1, 0), box: new THREE.BoxGeometry(1, 1, 1),
+  sphere: new THREE.IcosahedronGeometry(1, 1), ball: new THREE.IcosahedronGeometry(1, 2),
+  pole: new THREE.CylinderGeometry(0.06, 0.06, 1.6, 6), disc: new THREE.CircleGeometry(1, 28).rotateX(-Math.PI / 2),
+  roof: new THREE.ConeGeometry(3.3, 1.8, 4).rotateY(Math.PI / 4),
+  cone: new THREE.ConeGeometry(1, 1, 8),
+  rope: new THREE.CylinderGeometry(0.08, 0.08, 1, 6).rotateX(Math.PI / 2),
+};
+function mesh(geo, m, sx = 1, sy = 1, sz = 1, x = 0, y = 0, z = 0) {
+  const o = new THREE.Mesh(geo, m); o.scale.set(sx, sy, sz); o.position.set(x, y, z);
+  o.castShadow = true; return o;
+}
+
+// ---------- Suelo ----------
+function snowTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d');
+  g.fillStyle = '#f2f6fb'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 60; i++) {
+    const x = rand(0, 256), y = rand(0, 256), r = rand(10, 45);
+    for (const ox of [-256, 0, 256]) for (const oy of [-256, 0, 256]) {
+      const gr = g.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, r);
+      gr.addColorStop(0, 'rgba(190,207,232,0.35)'); gr.addColorStop(1, 'rgba(190,207,232,0)');
+      g.fillStyle = gr; g.beginPath(); g.arc(x + ox, y + oy, r, 0, 7); g.fill();
+    }
+  }
+  for (let i = 0; i < 1200; i++) { g.fillStyle = `rgba(140,160,195,${Math.random() * 0.4})`; g.fillRect(rand(0, 256), rand(0, 256), 1.5, 1.5); }
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
+}
+const TILE = 16, GSIZE = 320;
+const gtex = snowTexture(); gtex.repeat.set(GSIZE / TILE, GSIZE / TILE);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(GSIZE, GSIZE), new THREE.MeshStandardMaterial({ map: gtex, roughness: 1 }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+
+// ---------- Esquiadores ----------
+function makeSkier(color) {
+  const root = new THREE.Group(), body = new THREE.Group(); root.add(body);
+  const jacket = mat(color);
+  for (const sx of [-0.2, 0.2]) body.add(mesh(GEO.box, MAT.ski, 0.14, 0.05, 1.9, sx, 0.04, 0.1));
+  body.add(mesh(GEO.box, MAT.pants, 0.5, 0.7, 0.32, 0, 0.42, 0));
+  const torso = mesh(GEO.box, jacket, 0.6, 0.75, 0.42, 0, 1.12, 0.05); torso.rotation.x = 0.25; body.add(torso);
+  body.add(mesh(GEO.sphere, MAT.skin, 0.23, 0.23, 0.23, 0, 1.68, 0.15));
+  body.add(mesh(GEO.cone, jacket, 0.23, 0.4, 0.23, 0, 1.95, 0.13));
+  body.add(mesh(GEO.sphere, MAT.white, 0.08, 0.08, 0.08, 0, 2.17, 0.13));
+  for (const sx of [-0.45, 0.45]) {
+    const p = mesh(GEO.pole, MAT.pole, 0.4, 0.85, 0.4, sx, 0.75, -0.1); p.rotation.x = -0.5; body.add(p);
+  }
+  return { root, body };
+}
+const P = [0, 1].map(i => {
+  const m = makeSkier(i ? 0x2a7de1 : 0xe63946); scene.add(m.root);
+  return { i, m, x: 0, z: 0, vx: 0, vz: 0, heading: 0, steer: 0, invul: 0, tumble: 0, spin: 0, trailAcc: 0, vl: 0, brake: false, onIce: false };
+});
+
+// ---------- Cuerda (Verlet) ----------
+const rope = [];
+const ropeMeshes = [];
+for (let i = 0; i < N - 1; i++) { const m = mesh(GEO.rope, MAT.rope); scene.add(m); ropeMeshes.push(m); }
+function resetRope() {
+  rope.length = 0;
+  for (let i = 0; i < N; i++) {
+    const t = i / (N - 1);
+    const x = lerp(P[0].x, P[1].x, t), z = lerp(P[0].z, P[1].z, t) - Math.sin(t * Math.PI) * 3;
+    rope.push({ x, z, px: x, pz: z });
+  }
+}
+const invM = i => (i === 0 || i === N - 1) ? 0.02 : 1;
+
+function ropeCollide(near) {
+  for (let i = 0; i < N - 1; i++) {
+    const a = rope[i], b = rope[i + 1];
+    const abx = b.x - a.x, abz = b.z - a.z, len2 = abx * abx + abz * abz || 1e-6;
+    for (const o of near) {
+      const t = clamp(((o.x - a.x) * abx + (o.z - a.z) * abz) / len2, 0, 1);
+      const cx = a.x + abx * t, cz = a.z + abz * t;
+      let dx = cx - o.x, dz = cz - o.z; const d = Math.hypot(dx, dz), R = o.r * 0.85 + 0.1;
+      if (d < R && d > 1e-5) {
+        dx /= d; dz /= d;
+        const wa = i === 0 ? 0 : 1 - t, wb = i + 1 === N - 1 ? 0 : t;
+        const den = wa * (1 - t) + wb * t; if (den <= 1e-4) continue;
+        const k = (R - d) / den;
+        a.x += dx * k * wa; a.z += dz * k * wa; b.x += dx * k * wb; b.z += dz * k * wb;
+      }
+    }
+  }
+}
+function stepRope(dt, near) {
+  const damp = Math.exp(-0.4 * dt), a = P[0], b = P[1];
+  for (let i = 1; i < N - 1; i++) {
+    const r = rope[i];
+    const vx = (r.x - r.px) * damp, vz = (r.z - r.pz) * damp;
+    r.px = r.x; r.pz = r.z; r.x += vx; r.z += vz + world.G * 0.85 * dt * dt;
+  }
+  const ax0 = a.x, az0 = a.z, bx0 = b.x, bz0 = b.z;
+  rope[0].x = a.x; rope[0].z = a.z; rope[N - 1].x = b.x; rope[N - 1].z = b.z;
+  for (let it = 0; it < 16; it++) {
+    for (let i = 0; i < N - 1; i++) {
+      const p = rope[i], q = rope[i + 1];
+      const dx = q.x - p.x, dz = q.z - p.z, d = Math.hypot(dx, dz);
+      if (d > SEG) {
+        const wa = invM(i), wb = invM(i + 1), c = (d - SEG) / (d * (wa + wb));
+        p.x += dx * c * wa; p.z += dz * c * wa; q.x -= dx * c * wb; q.z -= dz * c * wb;
+      }
+    }
+    if (it % 4 === 3) ropeCollide(near);
+  }
+  a.x = rope[0].x; a.z = rope[0].z; b.x = rope[N - 1].x; b.z = rope[N - 1].z;
+  const dx = b.x - a.x, dz = b.z - a.z, d = Math.hypot(dx, dz);
+  if (d > ROPE_LEN) {
+    const c = (d - ROPE_LEN) / d * 0.5;
+    a.x += dx * c; a.z += dz * c; b.x -= dx * c; b.z -= dz * c;
+  }
+  rope[0].x = a.x; rope[0].z = a.z; rope[N - 1].x = b.x; rope[N - 1].z = b.z;
+  const k = 0.9 / dt;
+  a.vx += (a.x - ax0) * k; a.vz += (a.z - az0) * k;
+  b.vx += (b.x - bx0) * k; b.vz += (b.z - bz0) * k;
+}
+const tmpV = new THREE.Vector3();
+function drawRope() {
+  const taut = Math.pow(clamp(Math.hypot(P[0].x - P[1].x, P[0].z - P[1].z) / ROPE_LEN, 0, 1), 6);
+  const ry = i => {
+    const e = Math.max(0, 1 - Math.min(i, N - 1 - i) / 3);
+    return lerp(lerp(0.12, 0.82, e), 0.82, taut);
+  };
+  for (let i = 0; i < N - 1; i++) {
+    const a = rope[i], b = rope[i + 1], m = ropeMeshes[i], ya = ry(i), yb = ry(i + 1);
+    m.position.set((a.x + b.x) / 2, (ya + yb) / 2, (a.z + b.z) / 2);
+    tmpV.set(b.x, yb, b.z); m.lookAt(tmpV);
+    m.scale.set(1, 1, Math.hypot(b.x - a.x, yb - ya, b.z - a.z) + 0.03);
+  }
+}
+
+// ---------- Obstáculos ----------
+let obstacles = [];
+const obsById = new Map();
+let genUntil = 0, seed = 1, chunkIdx = 0, chunkCount = 0;
+const MOVING = new Set(['ball', 'moose', 'plow', 'npc']);
+function addObs(o) {
+  o.id = chunkIdx * 1000 + (chunkCount++);
+  o.mesh.position.set(o.x, o.y || 0, o.z); scene.add(o.mesh); obstacles.push(o); obsById.set(o.id, o); return o;
+}
+function treeMesh(s, shadow = true) {
+  const g = new THREE.Group();
+  g.add(mesh(GEO.trunk, MAT.trunk, 1, 1, 1, 0, 0.4, 0));
+  const pm = rand() < 0.5 ? MAT.pine : MAT.pine2;
+  g.add(mesh(GEO.c1, pm, 1, 1, 1, 0, 1.4, 0), mesh(GEO.c2, pm, 1, 1, 1, 0, 2.2, 0),
+        mesh(GEO.c3, pm, 1, 1, 1, 0, 2.9, 0), mesh(GEO.cap, MAT.snow, 1, 1, 1, 0, 3.35, 0));
+  if (!shadow) g.traverse(m => { if (m.isMesh) m.castShadow = false; });
+  g.scale.setScalar(s); g.rotation.y = rand(0, 6.3); return g;
+}
+const solid = (o) => Object.assign({ solid: true, lethal: true, ropeBlock: true, vx: 0, vz: 0 }, o);
+
+function addTree(x, z, s = rand(0.8, 1.4)) { return addObs(solid({ type: 'tree', x, z, r: 0.75 * s, mesh: treeMesh(s) })); }
+function addRock(x, z) {
+  const s = rand(0.8, 1.8), m = mesh(GEO.rock, MAT.rock, s, s * 0.6, s * 0.9);
+  m.rotation.set(rand(0, 1), rand(0, 6), 0);
+  const g = new THREE.Group(); g.add(m); m.position.y = s * 0.25;
+  return addObs(solid({ type: 'rock', x, z, r: 0.95 * s, mesh: g }));
+}
+function addCabin(x, z) {
+  const g = new THREE.Group();
+  g.add(mesh(GEO.box, MAT.wood, 4, 2.4, 3.2, 0, 1.2, 0), mesh(GEO.roof, MAT.roof, 1, 1, 0.8, 0, 3.3, 0),
+        mesh(GEO.box, MAT.snow, 3.2, 0.25, 2.6, 0, 4.05, 0), mesh(GEO.box, MAT.window, 0.9, 0.7, 0.05, 0.9, 1.3, -1.62),
+        mesh(GEO.box, MAT.dark, 0.8, 1.5, 0.05, -0.9, 0.75, -1.62));
+  g.rotation.y = rand(-0.3, 0.3);
+  return addObs(solid({ type: 'cabin', x, z, r: 2.6, mesh: g }));
+}
+function addSnowman(x, z) {
+  const g = new THREE.Group();
+  g.add(mesh(GEO.sphere, MAT.snow, 0.8, 0.8, 0.8, 0, 0.7, 0), mesh(GEO.sphere, MAT.snow, 0.55, 0.55, 0.55, 0, 1.75, 0),
+        mesh(GEO.sphere, MAT.snow, 0.38, 0.38, 0.38, 0, 2.5, 0));
+  const nose = mesh(GEO.cone, MAT.carrot, 0.08, 0.4, 0.08, 0, 2.5, -0.5); nose.rotation.x = -Math.PI / 2; g.add(nose);
+  g.add(mesh(GEO.box, MAT.dark, 0.6, 0.35, 0.6, 0, 2.95, 0), mesh(GEO.box, MAT.dark, 0.85, 0.06, 0.85, 0, 2.78, 0));
+  return addObs(solid({ type: 'snowman', x, z, r: 0.85, mesh: g }));
+}
+function addIce(x, z) {
+  const r = rand(2.5, 4.5), m = new THREE.Mesh(GEO.disc, MAT.ice); m.scale.set(r, 1, r * rand(0.7, 1.3)); m.receiveShadow = true;
+  return addObs({ type: 'ice', x, z, y: 0.015, r, mesh: m, solid: false, lethal: false, ropeBlock: false, ice: true });
+}
+function addDecorTree(x, z) { return addObs({ type: 'decor', x, z, r: 0, mesh: treeMesh(rand(1, 1.8), false), decor: true }); }
+function addPole(x, z) {
+  const g = new THREE.Group();
+  g.add(mesh(GEO.pole, MAT.red, 1, 1, 1, 0, 0.8, 0), mesh(GEO.box, MAT.red, 0.04, 0.4, 0.6, 0, 1.4, 0.3));
+  return addObs({ type: 'decor', x, z, r: 0, mesh: g, decor: true });
+}
+function addBall(x, z) {
+  const r = rand(1.1, 1.6), g = new THREE.Group(), b = mesh(GEO.ball, MAT.snow, r, r, r, 0, r, 0); g.add(b);
+  const dir = rand() < 0.5 ? -1 : 1, sp = rand(4, 7);
+  return addObs(solid({ type: 'ball', x, z, r, mesh: g, inner: b, vx: dir * (sp + world.D * 5) }));
+}
+function addMoose(x, z) {
+  const g = new THREE.Group(), legs = [];
+  g.add(mesh(GEO.box, MAT.moose, 1, 1.1, 2.2, 0, 1.6, 0), mesh(GEO.box, MAT.moose, 0.45, 0.9, 0.45, 0, 2.2, 1.1),
+        mesh(GEO.box, MAT.moose, 0.5, 0.5, 0.9, 0, 2.5, 1.55));
+  for (const sx of [-0.8, 0.8]) { const a = mesh(GEO.box, MAT.antler, 0.9, 0.12, 0.5, sx, 2.9, 1.3); a.rotation.z = sx * 0.4; g.add(a); }
+  for (const [lx, lz] of [[-0.35, 0.8], [0.35, 0.8], [-0.35, -0.8], [0.35, -0.8]]) {
+    const l = mesh(GEO.box, MAT.moose, 0.25, 1.1, 0.25, lx, 0.55, lz); legs.push(l); g.add(l);
+  }
+  const dir = x > 0 ? -1 : 1;
+  g.rotation.y = dir > 0 ? Math.PI / 2 : -Math.PI / 2;
+  return addObs(solid({ type: 'moose', x, z, r: 1.3, mesh: g, legs, dir, walking: true, t: rand(1.5, 3), ph: 0 }));
+}
+function addPlow(x, z) {
+  const g = new THREE.Group();
+  g.add(mesh(GEO.box, MAT.plow, 2.6, 1.4, 3.2, 0, 1.0, 0), mesh(GEO.box, MAT.glass, 2.2, 1.0, 1.4, 0, 2.2, -0.4),
+        mesh(GEO.box, MAT.dark, 3.8, 1.0, 0.3, 0, 0.55, 2.0));
+  for (const sx of [-1.2, 1.2]) for (const sz of [-1.0, 1.0]) g.add(mesh(GEO.box, MAT.dark, 0.4, 0.9, 0.9, sx, 0.45, sz));
+  const light = mesh(GEO.box, MAT.light, 0.5, 0.3, 0.5, 0, 2.85, -0.4); g.add(light);
+  g.rotation.y = Math.PI;
+  return addObs(solid({ type: 'plow', x, z, r: 2.0, mesh: g, light, vz: -rand(4, 6) }));
+}
+function addNPC(x, z) {
+  const m = makeSkier([0x7b2cbf, 0x2a9d8f, 0xf4a261, 0x6c757d][Math.floor(rand(0, 4))]);
+  return addObs(solid({ type: 'npc', x, z, r: 0.6, mesh: m.root, t: 0, ph: rand(0, 6), spd: rand(6, 9) }));
+}
+
+// La montaña se genera con una semilla por trozo: así los dos jugadores online ven la misma pista.
+function genChunk(z0) {
+  chunkIdx = Math.round(z0 / CH); chunkCount = 0;
+  rng = mulberry32((seed ^ Math.imul(chunkIdx + 7919, 2654435761)) >>> 0);
+  try {
+    for (const s of [-1, 1]) {
+      for (let k = 0; k < 4; k++) addDecorTree(s * (TRACK + rand(3, 18)), z0 + rand(0, CH));
+      addPole(s * (TRACK + 0.8), z0); addPole(s * (TRACK + 0.8), z0 + CH / 2);
+    }
+    if (z0 < 50) return;
+    const D = clamp(z0 / 2500, 0, 1);
+    const n = Math.round(3 + D * 7 + rand(0, 2));
+    const placed = [];
+    const free = (x, z, r) => placed.every(q => Math.hypot(q.x - x, q.z - z) > q.r + r + 2.5);
+    for (let k = 0; k < n; k++) {
+      const x = rand(-1, 1) * (TRACK - 2), z = z0 + rand(0, CH);
+      if (rand() < 0.08 + 0.3 * D) {
+        const m = rand();
+        if (m < 0.3) addBall(x, z);
+        else if (m < 0.55) addMoose(x, z);
+        else if (m < 0.8 && z0 > 150) addNPC(x, z);
+        else if (z0 > 350) addPlow(x, z);
+        else addBall(x, z);
+        continue;
+      }
+      if (!free(x, z, 2)) continue;
+      const s = rand();
+      if (s < 0.45) {
+        if (rand() < 0.25) { const c = Math.floor(rand(3, 7)); for (let j = 0; j < c; j++) addTree(x + rand(-3, 3), z + rand(-3, 3)); }
+        else addTree(x, z);
+      } else if (s < 0.68) addRock(x, z);
+      else if (s < 0.78 && z0 > 200) addCabin(x, z);
+      else if (s < 0.9) addSnowman(x, z);
+      else addIce(x, z);
+      placed.push({ x, z, r: 2 });
+    }
+  } finally { rng = Math.random; }
+}
+
+function updateObstacle(o, dt) {
+  switch (o.type) {
+    case 'ball':
+      o.x += o.vx * dt;
+      if (Math.abs(o.x) > TRACK + 6) o.vx = -Math.sign(o.x) * Math.abs(o.vx);
+      o.inner.rotation.z -= o.vx * dt / o.r; break;
+    case 'moose':
+      o.t -= dt;
+      if (o.t <= 0) {
+        if (o.walking) { o.walking = false; o.t = rand(0.6, 1.6); }
+        else { o.walking = true; o.t = rand(1.5, 3.5); if (Math.random() < 0.35 || Math.abs(o.x) > TRACK - 3) o.dir = o.x > 0 ? -1 : 1; }
+      }
+      o.vx = o.walking ? o.dir * 3.2 : 0; o.x += o.vx * dt;
+      o.mesh.rotation.y = o.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
+      if (o.walking) { o.ph += dt * 9; o.legs.forEach((l, i) => l.rotation.x = Math.sin(o.ph + (i % 2 ? 0 : Math.PI)) * 0.5); }
+      break;
+    case 'plow':
+      o.z += o.vz * dt; break;
+    case 'npc': {
+      o.t += dt; const h = 0.8 * Math.sin(o.t * 1.3 + o.ph);
+      o.vx = Math.sin(h) * o.spd; o.vz = Math.cos(h) * o.spd;
+      o.x = clamp(o.x + o.vx * dt, -TRACK + 1, TRACK - 1); o.z += o.vz * dt; o.mesh.rotation.y = h; break;
+    }
+    default: return;
+  }
+  o.mesh.position.x = o.x; o.mesh.position.z = o.z;
+}
+
+// ---------- Huellas y nieve ----------
+const TRAILS = 2400;
+const trailMesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.11, 0.42).rotateX(-Math.PI / 2),
+  new THREE.MeshBasicMaterial({ color: 0xc3d2e8, transparent: true, opacity: 0.9, depthWrite: false }), TRAILS);
+trailMesh.frustumCulled = false; scene.add(trailMesh);
+const dummy = new THREE.Object3D(); let trailIdx = 0;
+function clearTrails() {
+  dummy.scale.set(0, 0, 0); dummy.updateMatrix();
+  for (let i = 0; i < TRAILS; i++) trailMesh.setMatrixAt(i, dummy.matrix);
+  trailMesh.instanceMatrix.needsUpdate = true;
+}
+function addTrail(p) {
+  const px = Math.cos(p.heading), pz = -Math.sin(p.heading);
+  for (const s of [-0.2, 0.2]) {
+    dummy.position.set(p.x + px * s, 0.012, p.z + pz * s); dummy.rotation.set(0, p.heading, 0); dummy.scale.set(1, 1, 1);
+    dummy.updateMatrix(); trailMesh.setMatrixAt(trailIdx, dummy.matrix); trailIdx = (trailIdx + 1) % TRAILS;
+  }
+  trailMesh.instanceMatrix.needsUpdate = true;
+}
+const SP = 600, spPos = new Float32Array(SP * 3).fill(-50), spVel = new Float32Array(SP * 3), spLife = new Float32Array(SP);
+const spGeo = new THREE.BufferGeometry(); spGeo.setAttribute('position', new THREE.BufferAttribute(spPos, 3));
+const spray = new THREE.Points(spGeo, new THREE.PointsMaterial({ color: 0xe6efff, size: 0.35, transparent: true, opacity: 0.95, depthWrite: false }));
+spray.frustumCulled = false; scene.add(spray); let spIdx = 0;
+function emit(x, z, vx, vz, n) {
+  for (let k = 0; k < n; k++) {
+    const i = spIdx; spIdx = (spIdx + 1) % SP;
+    spPos[i * 3] = x + rand(-0.3, 0.3); spPos[i * 3 + 1] = 0.1; spPos[i * 3 + 2] = z + rand(-0.3, 0.3);
+    spVel[i * 3] = vx + rand(-1.5, 1.5); spVel[i * 3 + 1] = rand(2, 4.5); spVel[i * 3 + 2] = vz + rand(-1.5, 1.5);
+    spLife[i] = rand(0.4, 0.8);
+  }
+}
+function updateSpray(dt) {
+  for (let i = 0; i < SP; i++) {
+    if (spLife[i] <= 0) continue;
+    spLife[i] -= dt; spVel[i * 3 + 1] -= 12 * dt;
+    spPos[i * 3] += spVel[i * 3] * dt; spPos[i * 3 + 1] += spVel[i * 3 + 1] * dt; spPos[i * 3 + 2] += spVel[i * 3 + 2] * dt;
+    if (spLife[i] <= 0 || spPos[i * 3 + 1] < 0) { spLife[i] = 0; spPos[i * 3 + 1] = -50; }
+  }
+  spGeo.attributes.position.needsUpdate = true;
+}
+const FL = 1000, flPos = new Float32Array(FL * 3);
+for (let i = 0; i < FL; i++) { flPos[i * 3] = rand(-60, 60); flPos[i * 3 + 1] = rand(0, 40); flPos[i * 3 + 2] = rand(-40, 80); }
+const flGeo = new THREE.BufferGeometry(); flGeo.setAttribute('position', new THREE.BufferAttribute(flPos, 3));
+const flakes = new THREE.Points(flGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.22, transparent: true, opacity: 0.8, depthWrite: false }));
+flakes.frustumCulled = false; scene.add(flakes);
+
+// ---------- Input ----------
+const keys = {};
+addEventListener('keydown', e => {
+  if (e.target && e.target.tagName === 'INPUT') { if (e.code === 'Enter') joinGame(); return; }
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+  if (e.code === 'Space' && !e.repeat) onStart();
+  keys[e.code] = true;
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+const KM = [{ l: 'KeyA', r: 'KeyD', u: 'KeyW', d: 'KeyS' }, { l: 'ArrowLeft', r: 'ArrowRight', u: 'ArrowUp', d: 'ArrowDown' }];
+function getPad(i) { const pads = navigator.getGamepads ? navigator.getGamepads() : []; return pads && pads[i]; }
+function readKeys(k) { return { steer: (keys[k.l] ? 1 : 0) - (keys[k.r] ? 1 : 0), push: !!keys[k.u], brake: !!keys[k.d] }; }
+function applyPad(inp, pad) {
+  if (!pad) return inp;
+  const ax = pad.axes[0] || 0; if (Math.abs(ax) > 0.15) inp.steer = -ax;
+  if (pad.buttons[14]?.pressed) inp.steer = 1; if (pad.buttons[15]?.pressed) inp.steer = -1;
+  if (pad.buttons[0]?.pressed || pad.buttons[7]?.pressed) inp.push = true;
+  if (pad.buttons[1]?.pressed || pad.buttons[6]?.pressed) inp.brake = true;
+  return inp;
+}
+// En local: cada jugador sus teclas y su mando. En online: tu jugador usa cualquiera de los dos juegos de teclas.
+function getInput(i) { return applyPad(readKeys(KM[i]), getPad(i)); }
+function myInput() {
+  const a = readKeys(KM[0]), b = readKeys(KM[1]);
+  return applyPad({ steer: clamp(a.steer + b.steer, -1, 1), push: a.push || b.push, brake: a.brake || b.brake }, getPad(0));
+}
+let padWasDown = false;
+function pollPadStart() {
+  let down = false;
+  for (const i of [0, 1]) { const p = getPad(i); if (p && (p.buttons[9]?.pressed || p.buttons[0]?.pressed)) down = true; }
+  if (down && !padWasDown) onStart();
+  padWasDown = down;
+}
+
+// ---------- Estado del juego ----------
+const world = { G: 5.5, drag: 0.024, D: 0 };
+let state = 'menu', lives = 3, overTimer = -1, shake = 0;
+let best = 0; try { best = +localStorage.getItem('atados_best') || 0; } catch (e) {}
+const $ = id => document.getElementById(id);
+
+function resetWorld(newSeed) {
+  seed = newSeed >>> 0;
+  for (const o of obstacles) scene.remove(o.mesh);
+  obstacles = []; obsById.clear(); genUntil = -40;
+  P.forEach((p, i) => Object.assign(p, { x: i ? -4 : 4, z: 0, vx: 0, vz: 2, heading: 0, steer: 0, invul: 0, tumble: 0, spin: 0, trailAcc: 0, vl: 0, brake: false }));
+  resetRope(); clearTrails(); ensureChunks();
+  lives = 3; overTimer = -1; updateHUD();
+  camera.position.set(0, 30, -15); camLook.set(0, 0, 6);
+}
+function startGame() {
+  net.gameId++;
+  resetWorld((Math.random() * 4294967296) >>> 0);
+  state = 'play';
+  $('menu').classList.add('hidden'); $('over').classList.add('hidden');
+}
+function onStart() {
+  if (net.role === 'guest') { if (state !== 'play') { net.go++; sendGuestInput(true); } return; }
+  if (state === 'play') return;
+  startGame();
+}
+function ensureChunks() {
+  const mz = (P[0].z + P[1].z) / 2;
+  while (genUntil < mz + 170) { genChunk(genUntil); genUntil += CH; }
+  obstacles = obstacles.filter(o => {
+    if (o.z < mz - 45 || o.z > mz + 400) { scene.remove(o.mesh); obsById.delete(o.id); return false; } return true;
+  });
+}
+function updateHUD() {
+  $('hearts').textContent = '♥'.repeat(Math.max(0, lives)) + '♡'.repeat(Math.max(0, 3 - lives));
+  $('best').textContent = `Récord: ${Math.floor(best)} m`;
+}
+function hitFx() {
+  shake = 0.7;
+  const f = $('flash'); f.style.transition = 'none'; f.style.opacity = 0.35;
+  requestAnimationFrame(() => { f.style.transition = 'opacity .45s'; f.style.opacity = 0; });
+}
+function hit(p) {
+  if (p.invul > 0 || state !== 'play' || overTimer >= 0) return;
+  lives--; p.invul = 2.2; p.tumble = 0.9; hitFx(); updateHUD();
+  if (lives <= 0) overTimer = 1.4;
+}
+function showOver(d) {
+  state = 'over';
+  const rec = d > best; if (rec) { best = d; try { localStorage.setItem('atados_best', String(best)); } catch (e) {} }
+  $('finalDist').textContent = `${d} m`;
+  $('finalBest').textContent = rec ? '¡Nuevo récord!' : `Récord: ${Math.floor(best)} m`;
+  $('overMsg').textContent = net.role === 'guest' ? 'ESPACIO para pedir otra partida' : 'ESPACIO para volver a intentarlo';
+  $('over').classList.remove('hidden'); updateHUD();
+}
+function gameOver() { net.lastDist = Math.max(0, Math.floor((P[0].z + P[1].z) / 2)); showOver(net.lastDist); }
+
+// ---------- Física de los esquiadores ----------
+function stepPlayer(p, inp, dt) {
+  if (p.tumble > 0) {
+    p.tumble -= dt; inp = { steer: 0, push: false, brake: true }; p.spin += 14 * dt;
+    if (p.tumble <= 0) { p.spin = 0; p.heading = clamp(Math.atan2(p.vx, p.vz) || 0, -1.2, 1.2); }
+  }
+  if (p.invul > 0) p.invul -= dt;
+  p.steer += (inp.steer - p.steer) * Math.min(1, dt * 7);
+  const spd = Math.hypot(p.vx, p.vz);
+  p.heading = clamp(p.heading + p.steer * (spd < 4 ? 3.2 : 2.4) * dt, -1.85, 1.85);
+  const dx = Math.sin(p.heading), dz = Math.cos(p.heading);
+  let vf = p.vx * dx + p.vz * dz, vl = p.vx * dz - p.vz * dx;
+  vf += world.G * dz * dt; vl += -world.G * dx * dt * 0.25;
+  const grip = p.onIce ? 0.5 : inp.brake ? 2.5 : 7;
+  const keep = Math.exp(-grip * dt), lost = Math.abs(vl) * (1 - keep);
+  vl *= keep; vf += Math.sign(vf || 1) * lost * (p.onIce ? 0 : 0.45);
+  vf -= Math.sign(vf) * Math.min(Math.abs(vf), 0.5 * dt);
+  vf -= world.drag * vf * Math.abs(vf) * dt;
+  if (inp.brake) vf *= Math.exp(-1.6 * dt);
+  if (inp.push && vf < 12 && p.tumble <= 0) vf += 7 * dt;
+  p.vx = vf * dx + vl * dz; p.vz = vf * dz - vl * dx;
+  p.x += p.vx * dt; p.z += p.vz * dt;
+  p.vl = vl; p.brake = !!inp.brake;
+}
+function collidePlayer(p) {
+  p.onIce = false;
+  for (const o of obstacles) {
+    if (o.decor) continue;
+    const dz = p.z - o.z; if (dz > o.r + 1.5 || dz < -o.r - 1.5) continue;
+    const dx = p.x - o.x, d2 = dx * dx + dz * dz;
+    if (o.ice) { const sx = o.mesh.scale.x, sz = o.mesh.scale.z; if ((dx * dx) / (sx * sx) + (dz * dz) / (sz * sz) < 1) p.onIce = true; continue; }
+    const R = o.r + 0.45;
+    if (d2 < R * R) {
+      const d = Math.sqrt(d2) || 0.001, nx = dx / d, nz = dz / d;
+      p.x = o.x + nx * R; p.z = o.z + nz * R;
+      let rvx = p.vx - o.vx, rvz = p.vz - o.vz; const vn = rvx * nx + rvz * nz;
+      if (vn < 0) { rvx -= 1.5 * vn * nx; rvz -= 1.5 * vn * nz; }
+      p.vx = o.vx + rvx * 0.45; p.vz = o.vz + rvz * 0.45;
+      if (o.lethal) hit(p);
+    }
+  }
+  if (Math.abs(p.x) > TRACK) {
+    const s = Math.sign(p.x); p.x = s * TRACK;
+    if (p.vx * s > 0) p.vx *= -0.4; p.vz *= 0.97;
+  }
+}
+function collidePlayers() {
+  const a = P[0], b = P[1], dx = b.x - a.x, dz = b.z - a.z, d = Math.hypot(dx, dz);
+  if (d < 1.0 && d > 0) {
+    const nx = dx / d, nz = dz / d, o = (1 - d) / 2;
+    a.x -= nx * o; a.z -= nz * o; b.x += nx * o; b.z += nz * o;
+    const rv = (b.vx - a.vx) * nx + (b.vz - a.vz) * nz;
+    if (rv < 0) { a.vx += nx * rv * 0.8; a.vz += nz * rv * 0.8; b.vx -= nx * rv * 0.8; b.vz -= nz * rv * 0.8; }
+  }
+}
+
+function step(dt) {
+  const mz = (P[0].z + P[1].z) / 2, mx = (P[0].x + P[1].x) / 2;
+  world.D = clamp(mz / 3000, 0, 1);
+  world.G = 5.5 + world.D * 3; world.drag = 0.024 - 0.008 * world.D;
+  for (const o of obstacles) updateObstacle(o, dt);
+  let inputs;
+  if (overTimer >= 0) inputs = [{ steer: 0, brake: true }, { steer: 0, brake: true }];
+  else if (net.role === 'host') inputs = [myInput(), guestInput()];
+  else inputs = [getInput(0), getInput(1)];
+  P.forEach((p, i) => stepPlayer(p, inputs[i], dt));
+  collidePlayers();
+  const near = obstacles.filter(o => o.ropeBlock && Math.abs(o.z - mz) < ROPE_LEN + 4 && Math.abs(o.x - mx) < ROPE_LEN + 4);
+  stepRope(dt, near);
+  P.forEach(p => {
+    collidePlayer(p);
+    p.trailAcc += Math.hypot(p.vx, p.vz) * dt;
+    if (p.trailAcc > 0.35) { p.trailAcc = 0; if (p.tumble <= 0) addTrail(p); }
+  });
+  if (overTimer >= 0) { overTimer -= dt; if (overTimer < 0) gameOver(); }
+}
+
+// ---------- Online ----------
+// El anfitrión (rojo) simula todo y comparte el estado; el invitado (azul) solo manda sus controles.
+const net = { role: null, code: null, room: null, filter: false, gameId: 0, go: 0, lastGo: 0, lastSend: 0,
+              lastIn: '', snap: null, snapAt: 0, snapUpd: -1, seenGame: -1, lastDist: 0, wasLinked: false };
+let roomApi = null;
+
+function makeShim() {
+  // Sala de prueba entre pestañas del mismo navegador (solo fuera de claude.ai).
+  const bc = new BroadcastChannel('atados-shim'), me = Math.random().toString(36).slice(2, 10), rooms = {};
+  function mk(name) {
+    const R = { mine: {}, others: new Map() };
+    const send = () => bc.postMessage({ name, id: me, pres: R.mine });
+    const beat = setInterval(() => { if (rooms[name] === R) send(); else clearInterval(beat); }, 500);
+    R.api = {
+      name,
+      presence(patch) { for (const k in patch) { if (patch[k] === null) delete R.mine[k]; else R.mine[k] = patch[k]; } send(); return Promise.resolve(); },
+      peers() {
+        const now = Date.now(), list = [{ peer: me, isMe: true, sameTab: true, presence: R.mine, updatedAt: now }];
+        for (const [id, o] of R.others) if (now - o.seen < 2500) list.push({ peer: id, isMe: false, sameTab: false, presence: o.pres, updatedAt: o.upd });
+        return list;
+      },
+      leave() { R.mine = {}; send(); delete rooms[name]; return Promise.resolve(); },
+      connected: () => true,
+    };
+    rooms[name] = R; return R;
+  }
+  bc.onmessage = e => {
+    const m = e.data, R = rooms[m.name]; if (!R) return;
+    const o = R.others.get(m.id) || {}; o.pres = m.pres; o.seen = Date.now(); o.upd = performance.now(); R.others.set(m.id, o);
+  };
+  const lobby = mk('lobby');
+  return Object.assign({}, lobby.api, { join: async name => (rooms[name] || mk(name)).api });
+}
+
+function makePeerNet() {
+  // Conexión directa entre navegadores (WebRTC) con PeerJS; su servidor público gratuito solo sirve para encontrarse.
+  return {
+    join(name, role) {
+      return new Promise((resolve, reject) => {
+        const id = name.replace(/[^a-z0-9-]/g, '');
+        const st = { mine: {}, other: null, otherUpd: 0, conn: null };
+        let done = false, retry = null;
+        const peer = role === 'host' ? new Peer(id) : new Peer();
+        const api = {
+          name, lastError: null,
+          presence(patch) {
+            for (const k in patch) { if (patch[k] === null) delete st.mine[k]; else st.mine[k] = patch[k]; }
+            if (st.conn && st.conn.open) { try { st.conn.send({ pres: st.mine }); } catch (e) {} }
+            return Promise.resolve();
+          },
+          peers() {
+            const l = [{ peer: 'me', isMe: true, sameTab: true, presence: st.mine, updatedAt: 0 }];
+            if (st.conn && st.conn.open && st.other) l.push({ peer: 'other', isMe: false, sameTab: false, presence: st.other, updatedAt: st.otherUpd });
+            return l;
+          },
+          leave() { clearInterval(retry); try { peer.destroy(); } catch (e) {} return Promise.resolve(); },
+          connected: () => !!(st.conn && st.conn.open),
+        };
+        const wire = c => {
+          st.conn = c;
+          c.on('open', () => { api.lastError = null; c.send({ pres: st.mine }); });
+          c.on('data', d => { if (d && d.pres) { st.other = d.pres; st.otherUpd = performance.now(); } });
+          c.on('close', () => { if (st.conn === c) { st.conn = null; st.other = null; } });
+          c.on('error', () => {});
+        };
+        peer.on('open', () => {
+          if (role === 'guest') {
+            wire(peer.connect(id, { reliable: true }));
+            retry = setInterval(() => { if (!(st.conn && st.conn.open) && !peer.destroyed) wire(peer.connect(id, { reliable: true })); }, 3000);
+          }
+          done = true; resolve(api);
+        });
+        if (role === 'host') peer.on('connection', c => {
+          if (st.conn && st.conn.open) { c.on('open', () => c.close()); return; }   // solo 2 jugadores
+          wire(c);
+        });
+        peer.on('disconnected', () => { if (!peer.destroyed) peer.reconnect(); });
+        peer.on('error', e => { if (!done) { done = true; reject(e); } else api.lastError = e.type; });
+        setTimeout(() => { if (!done) { done = true; try { peer.destroy(); } catch (e) {} reject({ type: 'timeout' }); } }, 12000);
+      });
+    },
+  };
+}
+
+(async () => {
+  let api = null;
+  for (let i = 0; i < 30 && !(window.claude && typeof window.claude.use === 'function'); i++) await new Promise(r => setTimeout(r, 100));
+  if (window.claude && typeof window.claude.use === 'function') {
+    try { api = await window.claude.use('room'); } catch (e) { api = null; }
+  } else if (typeof Peer === 'function') {
+    api = makePeerNet();
+  } else if (typeof BroadcastChannel !== 'undefined' && (location.protocol === 'file:' || /^(localhost|127\.0\.0\.1)$/.test(location.hostname))) {
+    api = makeShim(); $('netNote').dataset.shim = '1';
+  }
+  roomApi = api;
+  const note = $('netNote');
+  if (!api) {
+    note.textContent = 'No se ha podido preparar el modo online (revisa la conexión a internet y recarga).';
+    $('bHost').disabled = $('bJoin').disabled = $('codeIn').disabled = true;
+  } else {
+    note.textContent = note.dataset.shim ? 'Modo de prueba: el online conecta pestañas de este navegador.'
+      : 'Online: crea una partida y pásale el código a tu amigo.';
+  }
+})();
+
+async function openRoom(code, role) {
+  try { const r = await roomApi.join('atados-' + code.toLowerCase(), role); return { r, filter: false }; }
+  catch (e) {
+    if (typeof roomApi.peers === 'function') return { r: roomApi, filter: true };   // sala común filtrada por código
+    throw e;
+  }
+}
+function findPeer(role) {
+  if (!net.room) return null;
+  for (const p of net.room.peers()) {
+    if (p.sameTab || p.kind === 'agent') continue;
+    const pr = p.presence || {};
+    if (pr.role === role && (!net.filter || pr.code === net.code)) return p;
+  }
+  return null;
+}
+function guestInput() {
+  const g = findPeer('guest'), a = g && Array.isArray(g.presence.in) ? g.presence.in : null;
+  if (!a) return { steer: 0, push: false, brake: false };
+  return { steer: clamp(+a[0] || 0, -1, 1), push: !!a[1], brake: !!a[2] };
+}
+function sendGuestInput(force) {
+  const i = myInput(), arr = [Math.round(i.steer * 10) / 10, i.push ? 1 : 0, i.brake ? 1 : 0];
+  const s = JSON.stringify(arr) + net.go;
+  const now = performance.now();
+  if (!force && (s === net.lastIn || now - net.lastSend < 33)) return;
+  net.lastIn = s; net.lastSend = now;
+  net.room.presence({ in: arr, go: net.go }).catch(() => {});
+}
+function buildState() {
+  const mz = (P[0].z + P[1].z) / 2, m = [];
+  for (const o of obstacles) {
+    if (!MOVING.has(o.type) || Math.abs(o.z - mz) > 110) continue;
+    const a = o.type === 'ball' ? o.inner.rotation.z : o.mesh.rotation.y;
+    m.push([o.id, r2(o.x), r2(o.z), r2(a)]);
+    if (m.length >= 40) break;
+  }
+  const r = []; for (const q of rope) r.push(r2(q.x), r2(q.z));
+  return {
+    g: net.gameId, sd: seed, s: state, l: lives, d: net.lastDist,
+    p: P.map(p => [r2(p.x), r2(p.z), r2(p.vx), r2(p.vz), r2(p.heading), r2(p.steer), r2(p.tumble), r2(p.invul), r2(p.spin), r2(p.vl), p.brake ? 1 : 0]),
+    r, m,
+  };
+}
+function hostNet() {
+  const g = findPeer('guest');
+  const go = g ? +g.presence.go || 0 : 0;
+  if (g && go !== net.lastGo) { net.lastGo = go; if (state !== 'play') startGame(); }
+  const now = performance.now();
+  if (now - net.lastSend > 33) { net.lastSend = now; net.room.presence({ st: buildState() }).catch(() => {}); }
+  return g;
+}
+function guestNet(dt) {
+  sendGuestInput(false);
+  const h = findPeer('host');
+  const st = h && h.presence.st;
+  if (!st || !Array.isArray(st.p)) return h;
+  if (h.updatedAt !== net.snapUpd) { net.snapUpd = h.updatedAt; net.snap = st; net.snapAt = performance.now(); }
+  if (st.g !== net.seenGame) {
+    net.seenGame = st.g; resetWorld(+st.sd || 1);
+  }
+  if (st.s !== state) {
+    if (st.s === 'play') { $('menu').classList.add('hidden'); $('over').classList.add('hidden'); state = 'play'; }
+    else if (st.s === 'over') showOver(+st.d || 0);
+    else { state = st.s; $('over').classList.add('hidden'); $('menu').classList.remove('hidden'); }
+  }
+  if (typeof st.l === 'number' && st.l !== lives) { if (st.l < lives) hitFx(); lives = st.l; updateHUD(); }
+  const age = Math.min(0.15, (performance.now() - net.snapAt) / 1000);
+  const k = 1 - Math.exp(-15 * dt);
+  st.p.forEach((a, i) => {
+    const p = P[i]; if (!Array.isArray(a)) return;
+    const tx = a[0] + a[2] * age, tz = a[1] + a[3] * age, ox = p.x, oz = p.z;
+    if (Math.hypot(tx - p.x, tz - p.z) > 8) { p.x = tx; p.z = tz; } else { p.x = lerp(p.x, tx, k); p.z = lerp(p.z, tz, k); }
+    p.vx = a[2]; p.vz = a[3]; p.heading = lerp(p.heading, a[4], k); p.steer = a[5]; p.tumble = a[6]; p.invul = a[7];
+    p.spin = a[8]; p.vl = a[9]; p.brake = !!a[10];
+    p.trailAcc += Math.hypot(p.x - ox, p.z - oz);
+    if (p.trailAcc > 0.35) { p.trailAcc = 0; if (p.tumble <= 0 && state === 'play') addTrail(p); }
+  });
+  if (Array.isArray(st.r) && st.r.length === N * 2) {
+    const avx = (P[0].vx + P[1].vx) / 2 * age, avz = (P[0].vz + P[1].vz) / 2 * age;
+    rope.forEach((q, i) => { q.x = lerp(q.x, st.r[i * 2] + avx, k); q.z = lerp(q.z, st.r[i * 2 + 1] + avz, k); });
+    rope[0].x = P[0].x; rope[0].z = P[0].z; rope[N - 1].x = P[1].x; rope[N - 1].z = P[1].z;
+  }
+  if (Array.isArray(st.m)) for (const e of st.m) {
+    const o = obsById.get(e[0]); if (!o) continue;
+    const ox = o.x;
+    o.x = lerp(o.x, e[1], k); o.z = lerp(o.z, e[2], k);
+    o.mesh.position.x = o.x; o.mesh.position.z = o.z;
+    if (o.type === 'ball') o.inner.rotation.z = e[3]; else o.mesh.rotation.y = e[3];
+    if (o.type === 'moose' && Math.abs(o.x - ox) > 0.001) { o.ph += dt * 9; o.legs.forEach((l, j) => l.rotation.x = Math.sin(o.ph + (j % 2 ? 0 : Math.PI)) * 0.5); }
+  }
+  return h;
+}
+function netTick(dt) {
+  const tag = $('netTag');
+  if (!net.role) { tag.textContent = ''; return; }
+  const other = net.role === 'host' ? hostNet() : guestNet(dt);
+  const linked = !!other;
+  tag.textContent = `Online · ${net.code} · ` + (linked ? (net.role === 'host' ? 'jugador 2 conectado' : 'conectado') : 'esperando al otro jugador…');
+  tag.classList.toggle('bad', !linked);
+  if (linked !== net.wasLinked) { net.wasLinked = linked; renderLobby(); }
+  if (!linked && net.role === 'guest' && net.room && net.room.lastError === 'peer-unavailable')
+    $('lobbyMsg').textContent = 'No encuentro esa partida. Revisa el código (sigo intentándolo…).';
+}
+function renderLobby() {
+  const msg = $('lobbyMsg');
+  if (net.role === 'host') {
+    msg.innerHTML = net.wasLinked ? '<span class="ok">¡Jugador 2 conectado!</span> Pulsa ESPACIO o Empezar.' : 'Esperando al jugador 2… Pásale este código.';
+    $('bStart').classList.remove('hidden');
+  } else {
+    msg.innerHTML = net.wasLinked ? '<span class="ok">Conectado.</span> Esperando a que el anfitrión empiece (o pulsa ESPACIO para pedirlo).' : 'Buscando la partida…';
+    $('bStart').classList.add('hidden');
+  }
+}
+let entering = false;
+async function enterRoom(role, code, tries = 0) {
+  if (!roomApi || entering) return;
+  entering = true;
+  $('netNote').textContent = 'Conectando…';
+  let r, filter;
+  try { ({ r, filter } = await openRoom(code, role)); }
+  catch (e) {
+    entering = false;
+    if (role === 'host' && e && e.type === 'unavailable-id' && tries < 5) return hostGame(tries + 1);
+    $('netNote').textContent = 'No se ha podido conectar' + (e && e.type ? ` (${e.type})` : '') + '. Inténtalo otra vez.';
+    return;
+  }
+  entering = false;
+  Object.assign(net, { role, code, room: r, filter, wasLinked: false, seenGame: -1, lastGo: 0, go: 0, lastIn: '' });
+  r.presence({ role, code, st: null, in: null, go: 0 }).catch(() => {});
+  $('codeOut').textContent = code;
+  $('modeBox').classList.add('hidden'); $('lobby').classList.remove('hidden');
+  renderLobby();
+}
+function hostGame(tries = 0) {
+  const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; let c = '';
+  for (let i = 0; i < 4; i++) c += A[Math.floor(Math.random() * A.length)];
+  enterRoom('host', c, typeof tries === 'number' ? tries : 0);
+}
+function joinGame() {
+  const c = $('codeIn').value.toUpperCase().replace(/[^A-Z]/g, '');
+  if (c.length !== 4) { $('netNote').textContent = 'El código tiene 4 letras.'; return; }
+  $('codeIn').blur(); enterRoom('guest', c);
+}
+async function leaveRoom() {
+  const r = net.room;
+  if (r) { if (!net.filter && r.leave) r.leave().catch(() => {}); else r.presence({ role: null, code: null, st: null, in: null }).catch(() => {}); }
+  Object.assign(net, { role: null, code: null, room: null });
+  $('netNote').textContent = 'Online: crea una partida y pásale el código a tu amigo.';
+  $('lobby').classList.add('hidden'); $('modeBox').classList.remove('hidden');
+  toMenu();
+}
+function toMenu() {
+  state = 'menu'; resetWorld(seed);
+  $('over').classList.add('hidden'); $('menu').classList.remove('hidden');
+}
+document.addEventListener('click', e => { if (e.target.tagName === 'BUTTON') e.target.blur(); });
+$('bLocal').onclick =() => { if (net.role) return; startGame(); };
+$('bHost').onclick = hostGame;
+$('bJoin').onclick = joinGame;
+$('bStart').onclick = () => onStart();
+$('bLeave').onclick = leaveRoom;
+$('bMenu').onclick = () => { if (net.role === 'host') { net.lastDist = 0; } toMenu(); };
+
+// ---------- Visuales y cámara ----------
+const camLook = new THREE.Vector3();
+let camH = 24;
+function updateVisuals(dt, t) {
+  const mx = (P[0].x + P[1].x) / 2, mz = (P[0].z + P[1].z) / 2;
+  const spread = Math.hypot(P[0].x - P[1].x, P[0].z - P[1].z);
+  const spd = (Math.hypot(P[0].vx, P[0].vz) + Math.hypot(P[1].vx, P[1].vz)) / 2;
+  const k = 1 - Math.exp(-3 * dt);
+  camH = lerp(camH, 22 + spread * 0.8 + spd * 0.35, k);
+  camera.position.set(lerp(camera.position.x, mx, k), camH, mz - camH * 0.55);
+  camLook.set(lerp(camLook.x, mx, k), 0, mz + 3 + spd * 0.15);
+  camera.lookAt(camLook);
+  const H = camH;
+  if (shake > 0) { shake -= dt; const s = shake * 0.6; camera.position.x += rand(-s, s); camera.position.y += rand(-s, s); }
+  scene.fog.near = H * 1.3; scene.fog.far = H * 4.2;
+
+  sun.position.set(mx + 20, 50, mz - 5); sun.target.position.set(mx, 0, mz + 10);
+  ground.position.set(Math.round(mx / TILE) * TILE, 0, Math.round(mz / TILE) * TILE);
+
+  for (const p of P) {
+    const r = p.m.root;
+    r.position.set(p.x, 0, p.z); r.rotation.y = p.heading + p.spin;
+    p.m.body.rotation.z = -p.steer * 0.35;
+    p.m.body.rotation.x = p.tumble > 0 ? 0.9 : (p.brake ? -0.15 : 0);
+    r.visible = p.invul <= 0 || p.tumble > 0 || ((t * 12) | 0) % 2 === 0;
+    const sp = Math.hypot(p.vx, p.vz), inten = Math.abs(p.vl) + (p.brake ? sp * 0.3 : 0);
+    if (state === 'play' && inten > 1.5 && sp > 2) {
+      const px = Math.cos(p.heading), pz = -Math.sin(p.heading), side = Math.sign(p.vl) || 1;
+      emit(p.x, p.z, px * side * 3 + p.vx * 0.4, pz * side * 3 + p.vz * 0.4, Math.min(4, inten / 2) | 0);
+    }
+  }
+  for (const o of obstacles) if (o.type === 'plow') o.light.visible = ((t * 4) | 0) % 2 === 0;
+  drawRope();
+  updateSpray(dt);
+  for (let i = 0; i < FL; i++) {
+    flPos[i * 3 + 1] -= (2 + (i % 5) * 0.4) * dt; flPos[i * 3] += Math.sin(t + i) * 0.3 * dt;
+    if (flPos[i * 3 + 1] < 0) { flPos[i * 3 + 1] = 40; flPos[i * 3] = mx + rand(-60, 60); flPos[i * 3 + 2] = mz + rand(-40, 80); }
+    if (flPos[i * 3 + 2] < mz - 45) flPos[i * 3 + 2] += 120;
+  }
+  flGeo.attributes.position.needsUpdate = true;
+
+  if (state === 'play') {
+    $('dist').textContent = `${Math.max(0, Math.floor(mz))} m`;
+    $('speed').textContent = `${Math.round(spd * 3.6)} km/h`;
+    ensureChunks();
+  }
+}
+
+// ---------- Bucle ----------
+resetWorld(12345); camera.position.set(0, 26, -13);
+let last = performance.now(), acc = 0;
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  pollPadStart();
+  if (net.role !== 'guest' && state === 'play') { acc += dt; while (acc >= SUB) { step(SUB); acc -= SUB; } }
+  else acc = 0;
+  netTick(dt);
+  updateVisuals(dt, now / 1000);
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(frame);
+window.__game = { P, net, get state() { return state; }, obstacles: () => obstacles, rope };
+</script>
+
+</html>
