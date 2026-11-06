@@ -705,22 +705,75 @@ function makeShim() {
   return Object.assign({}, lobby.api, { join: async name => (rooms[name] || mk(name)).api });
 }
 
+// Plan B: si la conexión directa no se abre (redes que bloquean P2P), los mensajes van por un servidor MQTT público y gratuito.
+const RELAY_URL = 'wss://broker.hivemq.com:8884/mqtt';
+const NOP2P = /[?&]nop2p/.test(location.search);   // solo pruebas: simula que la conexión directa falla
+let mqttLoading = null;
+function loadMqtt() {
+  if (window.mqtt) return Promise.resolve();
+  return mqttLoading || (mqttLoading = new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js';
+    s.onload = res; s.onerror = () => { mqttLoading = null; rej(new Error('mqtt')); };
+    document.head.appendChild(s);
+  }));
+}
+
 function makePeerNet() {
   // Conexión directa entre navegadores (WebRTC) con PeerJS; su servidor público gratuito solo sirve para encontrarse.
   return {
     join(name, role) {
       return new Promise((resolve, reject) => {
         const id = name.replace(/[^a-z0-9-]/g, '');
-        // st.conn = la conexión ABIERTA que usamos; pending = la que se está intentando abrir.
-        const st = { mine: {}, other: null, otherUpd: 0, conn: null, pending: null, triedAt: 0, seq: 0, lastN: 0 };
+        // st.conn = la conexión directa ABIERTA que usamos; pending = la que se está intentando abrir.
+        const st = { mine: {}, other: null, otherUpd: 0, conn: null, pending: null, triedAt: 0, firstTry: 0, seq: 0, lastN: 0, rxAt: 0 };
+        const relay = { client: null, active: false, lastRx: 0, starting: false };
+        const topic = 'atados-pablol19-v1/' + id;
         let done = false, retry = null, beat = null;
         const peer = role === 'host' ? new Peer(id) : new Peer();
         // Canal no fiable: un paquete perdido no frena a los siguientes. Cada mensaje lleva el estado completo y un número de orden.
         const OPTS = { reliable: false, serialization: 'json' };
-        const isOpen = () => !!(st.conn && st.conn.open);
-        const sendNow = () => { if (isOpen()) { try { st.conn.send({ pres: st.mine, n: ++st.seq }); } catch (e) {} } };
+        const isP2P = () => !!(st.conn && st.conn.open);
+        const onRelay = () => !isP2P() && relay.active && performance.now() - relay.lastRx < 5000;
+        const isOpen = () => isP2P() || onRelay();
+        const receive = d => {
+          if (!d || !d.pres) return;
+          const now = performance.now();
+          if (typeof d.n === 'number') {
+            if (d.n <= st.lastN && now - st.rxAt < 3000) return;   // mensaje viejo que llega tarde
+            st.lastN = d.n;
+          }
+          st.rxAt = now; st.other = d.pres; st.otherUpd = now;
+        };
+        const sendNow = () => {
+          const msg = { pres: st.mine, n: ++st.seq };
+          if (isP2P()) { try { st.conn.send(msg); } catch (e) {} }
+          else if (relay.active && relay.client && relay.client.connected) {
+            relay.client.publish(topic + (role === 'host' ? '/h2g' : '/g2h'), JSON.stringify(msg));
+          }
+        };
+        const startRelay = async () => {
+          if (relay.client || relay.starting) return;
+          relay.starting = true;
+          try { await loadMqtt(); } catch (e) { relay.starting = false; return; }
+          const c = window.mqtt.connect(RELAY_URL, { reconnectPeriod: 2000, connectTimeout: 8000 });
+          relay.client = c;
+          c.on('connect', () => {
+            c.subscribe(topic + (role === 'host' ? '/g2h' : '/h2g'));
+            if (role === 'guest') { relay.active = true; sendNow(); }   // el invitado llama; el anfitrión contesta cuando le oye
+          });
+          c.on('message', (t, m) => {
+            if (isP2P()) return;                       // si hay conexión directa, se prefiere
+            let d; try { d = JSON.parse(m.toString()); } catch (e) { return; }
+            relay.active = true; relay.lastRx = performance.now();
+            receive(d);
+          });
+          c.on('error', () => {});
+        };
         const api = {
-          name, lastError: null, fast: true,
+          name, lastError: null,
+          get fast() { return !onRelay(); },
+          get sendInterval() { return onRelay() ? 50 : 20; },
           presence(patch) {
             for (const k in patch) { if (patch[k] === null) delete st.mine[k]; else st.mine[k] = patch[k]; }
             sendNow();
@@ -732,13 +785,22 @@ function makePeerNet() {
             return l;
           },
           // Para mostrar en qué punto está la conexión.
-          status: () => isOpen() ? (st.other ? 'ok' : 'open') : (st.pending ? 'connecting' : 'idle'),
-          leave() { clearInterval(retry); clearInterval(beat); try { peer.destroy(); } catch (e) {} return Promise.resolve(); },
+          status: () => isP2P() ? (st.other ? 'ok' : 'open')
+            : onRelay() ? 'relay'
+            : relay.active ? 'relay-wait'
+            : (st.pending || NOP2P) ? 'connecting' : 'idle',
+          get via() { return isP2P() ? 'p2p' : onRelay() ? 'relay' : ''; },
+          leave() {
+            clearInterval(retry); clearInterval(beat);
+            try { peer.destroy(); } catch (e) {}
+            try { relay.client && relay.client.end(true); } catch (e) {}
+            return Promise.resolve();
+          },
           connected: isOpen,
         };
-        const adopt = c => {       // pasa a usar esta conexión (cerrando la anterior si la había)
+        const adopt = c => {       // pasa a usar esta conexión directa (cerrando la anterior si la había)
           if (st.conn && st.conn !== c) { try { st.conn.close(); } catch (e) {} }
-          st.conn = c; st.lastN = 0; st.other = null; api.lastError = null;
+          st.conn = c; st.lastN = 0; api.lastError = null;
           if (st.pending === c) st.pending = null;
           sendNow();
         };
@@ -746,18 +808,20 @@ function makePeerNet() {
           c.on('open', () => adopt(c));
           c.on('data', d => {
             if (c !== st.conn) { if (c.open) adopt(c); else return; }
-            if (!d || !d.pres) return;
-            if (typeof d.n === 'number') { if (d.n <= st.lastN) return; st.lastN = d.n; }   // descarta mensajes viejos que llegan tarde
-            st.other = d.pres; st.otherUpd = performance.now();
+            receive(d);
           });
           c.on('close', () => {
-            if (st.conn === c) { st.conn = null; st.other = null; }
+            if (st.conn === c) st.conn = null;
             if (st.pending === c) st.pending = null;
           });
           c.on('error', () => { if (st.pending === c) st.pending = null; });
         };
         const tryConnect = () => {
-          if (isOpen() || peer.destroyed || peer.disconnected) return;
+          if (isP2P() || peer.destroyed) return;
+          if (!st.firstTry) st.firstTry = performance.now();
+          // Si en 6 s no hay conexión directa, se activa el servidor intermedio (la directa se sigue intentando).
+          if (performance.now() - st.firstTry > 6000) startRelay();
+          if (NOP2P || peer.disconnected) return;
           // Entre casas distintas abrir la conexión puede tardar varios segundos: no la pisamos hasta pasados 12 s.
           if (st.pending && performance.now() - st.triedAt < 12000) return;
           if (st.pending) { try { st.pending.close(); } catch (e) {} }
@@ -766,16 +830,17 @@ function makePeerNet() {
         // Latido: reenvía el último estado aunque la pestaña esté en segundo plano (el bucle del juego se para ahí).
         beat = setInterval(sendNow, 250);
         peer.on('open', () => {
-          if (role === 'guest') { tryConnect(); retry = setInterval(tryConnect, 2000); }
+          if (role === 'guest') { tryConnect(); retry = setInterval(tryConnect, 1000); }
+          else startRelay();                       // el anfitrión escucha también por el servidor intermedio desde el principio
           done = true; resolve(api);
         });
         // Anfitrión: se queda siempre con la conexión más reciente (así el invitado puede recargar y volver a entrar).
-        if (role === 'host') peer.on('connection', c => { wire(c); if (c.open) adopt(c); });
+        if (role === 'host') peer.on('connection', c => { if (NOP2P) return; wire(c); if (c.open) adopt(c); });
         peer.on('disconnected', () => { if (!peer.destroyed) peer.reconnect(); });
         peer.on('error', e => {
           if (!done) { done = true; reject(e); return; }
           api.lastError = e.type;
-          if (e.type === 'peer-unavailable') st.pending = null;    // ese código no existe (aún): reintentar en 2 s
+          if (e.type === 'peer-unavailable') { st.pending = null; st.firstTry = 0; }   // ese código no existe (aún)
         });
         setTimeout(() => { if (!done) { done = true; try { peer.destroy(); } catch (e) {} reject({ type: 'timeout' }); } }, 12000);
       });
@@ -857,7 +922,7 @@ function hostNet() {
   const now = performance.now();
   const pg = g ? +g.presence.pg || 0 : 0;
   if (pg && pg !== net.lastPg) { net.lastPg = pg; net.pgAt = now; }
-  if (now - net.lastSend > (net.room.fast ? 20 : 33)) { net.lastSend = now; net.room.presence({ st: buildState() }).catch(() => {}); }
+  if (now - net.lastSend > (net.room.sendInterval || (net.room.fast ? 20 : 33))) { net.lastSend = now; net.room.presence({ st: buildState() }).catch(() => {}); }
   return g;
 }
 function guestNet(dt) {
@@ -942,7 +1007,7 @@ function netTick(dt) {
   if (!net.role) { tag.textContent = mode === 'solo' && state !== 'menu' ? 'Modo solo' : ''; tag.classList.remove('bad'); return; }
   const other = net.role === 'host' ? hostNet() : guestNet(dt);
   const linked = !!other;
-  tag.textContent = `Online · ${net.code} · ` + (linked ? (net.role === 'host' ? 'jugador 2 conectado' : `conectado · ping ${Math.round(net.rtt)} ms`) : 'esperando al otro jugador…');
+  tag.textContent = `Online · ${net.code} · ` + (linked ? (net.role === 'host' ? 'jugador 2 conectado' : `conectado${net.room.via === 'relay' ? ' (servidor intermedio)' : ''} · ping ${Math.round(net.rtt)} ms`) : 'esperando al otro jugador…');
   tag.classList.toggle('bad', !linked);
   if (linked !== net.wasLinked) { net.wasLinked = linked; renderLobby(); }
   if (!linked && net.role === 'guest' && net.room) {
@@ -950,6 +1015,7 @@ function netTick(dt) {
     const msg = net.room.lastError === 'peer-unavailable' ? 'No encuentro esa partida. Revisa el código (sigo intentándolo…).'
       : s === 'connecting' ? 'Partida encontrada. Conectando con el anfitrión…'
       : s === 'open' ? 'Conectado. Esperando respuesta del anfitrión…'
+      : s === 'relay-wait' ? 'La conexión directa no funciona en vuestra red. Probando por servidor intermedio…'
       : 'Buscando la partida…';
     if ($('lobbyMsg').textContent !== msg) $('lobbyMsg').textContent = msg;
   }
