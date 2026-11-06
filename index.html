@@ -711,50 +711,72 @@ function makePeerNet() {
     join(name, role) {
       return new Promise((resolve, reject) => {
         const id = name.replace(/[^a-z0-9-]/g, '');
-        const st = { mine: {}, other: null, otherUpd: 0, conn: null, seq: 0, lastN: 0 };
-        let done = false, retry = null;
+        // st.conn = la conexión ABIERTA que usamos; pending = la que se está intentando abrir.
+        const st = { mine: {}, other: null, otherUpd: 0, conn: null, pending: null, triedAt: 0, seq: 0, lastN: 0 };
+        let done = false, retry = null, beat = null;
         const peer = role === 'host' ? new Peer(id) : new Peer();
         // Canal no fiable: un paquete perdido no frena a los siguientes. Cada mensaje lleva el estado completo y un número de orden.
         const OPTS = { reliable: false, serialization: 'json' };
+        const isOpen = () => !!(st.conn && st.conn.open);
+        const sendNow = () => { if (isOpen()) { try { st.conn.send({ pres: st.mine, n: ++st.seq }); } catch (e) {} } };
         const api = {
           name, lastError: null, fast: true,
           presence(patch) {
             for (const k in patch) { if (patch[k] === null) delete st.mine[k]; else st.mine[k] = patch[k]; }
-            if (st.conn && st.conn.open) { try { st.conn.send({ pres: st.mine, n: ++st.seq }); } catch (e) {} }
+            sendNow();
             return Promise.resolve();
           },
           peers() {
             const l = [{ peer: 'me', isMe: true, sameTab: true, presence: st.mine, updatedAt: 0 }];
-            if (st.conn && st.conn.open && st.other) l.push({ peer: 'other', isMe: false, sameTab: false, presence: st.other, updatedAt: st.otherUpd });
+            if (isOpen() && st.other) l.push({ peer: 'other', isMe: false, sameTab: false, presence: st.other, updatedAt: st.otherUpd });
             return l;
           },
-          leave() { clearInterval(retry); try { peer.destroy(); } catch (e) {} return Promise.resolve(); },
-          connected: () => !!(st.conn && st.conn.open),
+          // Para mostrar en qué punto está la conexión.
+          status: () => isOpen() ? (st.other ? 'ok' : 'open') : (st.pending ? 'connecting' : 'idle'),
+          leave() { clearInterval(retry); clearInterval(beat); try { peer.destroy(); } catch (e) {} return Promise.resolve(); },
+          connected: isOpen,
+        };
+        const adopt = c => {       // pasa a usar esta conexión (cerrando la anterior si la había)
+          if (st.conn && st.conn !== c) { try { st.conn.close(); } catch (e) {} }
+          st.conn = c; st.lastN = 0; st.other = null; api.lastError = null;
+          if (st.pending === c) st.pending = null;
+          sendNow();
         };
         const wire = c => {
-          st.conn = c; st.lastN = 0;
-          c.on('open', () => { api.lastError = null; c.send({ pres: st.mine, n: ++st.seq }); });
+          c.on('open', () => adopt(c));
           c.on('data', d => {
+            if (c !== st.conn) { if (c.open) adopt(c); else return; }
             if (!d || !d.pres) return;
             if (typeof d.n === 'number') { if (d.n <= st.lastN) return; st.lastN = d.n; }   // descarta mensajes viejos que llegan tarde
             st.other = d.pres; st.otherUpd = performance.now();
           });
-          c.on('close', () => { if (st.conn === c) { st.conn = null; st.other = null; } });
-          c.on('error', () => {});
+          c.on('close', () => {
+            if (st.conn === c) { st.conn = null; st.other = null; }
+            if (st.pending === c) st.pending = null;
+          });
+          c.on('error', () => { if (st.pending === c) st.pending = null; });
         };
+        const tryConnect = () => {
+          if (isOpen() || peer.destroyed || peer.disconnected) return;
+          // Entre casas distintas abrir la conexión puede tardar varios segundos: no la pisamos hasta pasados 12 s.
+          if (st.pending && performance.now() - st.triedAt < 12000) return;
+          if (st.pending) { try { st.pending.close(); } catch (e) {} }
+          const c = peer.connect(id, OPTS); st.pending = c; st.triedAt = performance.now(); wire(c);
+        };
+        // Latido: reenvía el último estado aunque la pestaña esté en segundo plano (el bucle del juego se para ahí).
+        beat = setInterval(sendNow, 250);
         peer.on('open', () => {
-          if (role === 'guest') {
-            wire(peer.connect(id, OPTS));
-            retry = setInterval(() => { if (!(st.conn && st.conn.open) && !peer.destroyed) wire(peer.connect(id, OPTS)); }, 3000);
-          }
+          if (role === 'guest') { tryConnect(); retry = setInterval(tryConnect, 2000); }
           done = true; resolve(api);
         });
-        if (role === 'host') peer.on('connection', c => {
-          if (st.conn && st.conn.open) { c.on('open', () => c.close()); return; }   // solo 2 jugadores
-          wire(c);
-        });
+        // Anfitrión: se queda siempre con la conexión más reciente (así el invitado puede recargar y volver a entrar).
+        if (role === 'host') peer.on('connection', c => { wire(c); if (c.open) adopt(c); });
         peer.on('disconnected', () => { if (!peer.destroyed) peer.reconnect(); });
-        peer.on('error', e => { if (!done) { done = true; reject(e); } else api.lastError = e.type; });
+        peer.on('error', e => {
+          if (!done) { done = true; reject(e); return; }
+          api.lastError = e.type;
+          if (e.type === 'peer-unavailable') st.pending = null;    // ese código no existe (aún): reintentar en 2 s
+        });
         setTimeout(() => { if (!done) { done = true; try { peer.destroy(); } catch (e) {} reject({ type: 'timeout' }); } }, 12000);
       });
     },
@@ -923,8 +945,14 @@ function netTick(dt) {
   tag.textContent = `Online · ${net.code} · ` + (linked ? (net.role === 'host' ? 'jugador 2 conectado' : `conectado · ping ${Math.round(net.rtt)} ms`) : 'esperando al otro jugador…');
   tag.classList.toggle('bad', !linked);
   if (linked !== net.wasLinked) { net.wasLinked = linked; renderLobby(); }
-  if (!linked && net.role === 'guest' && net.room && net.room.lastError === 'peer-unavailable')
-    $('lobbyMsg').textContent = 'No encuentro esa partida. Revisa el código (sigo intentándolo…).';
+  if (!linked && net.role === 'guest' && net.room) {
+    const s = net.room.status ? net.room.status() : '';
+    const msg = net.room.lastError === 'peer-unavailable' ? 'No encuentro esa partida. Revisa el código (sigo intentándolo…).'
+      : s === 'connecting' ? 'Partida encontrada. Conectando con el anfitrión…'
+      : s === 'open' ? 'Conectado. Esperando respuesta del anfitrión…'
+      : 'Buscando la partida…';
+    if ($('lobbyMsg').textContent !== msg) $('lobbyMsg').textContent = msg;
+  }
 }
 function renderLobby() {
   const msg = $('lobbyMsg');
